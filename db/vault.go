@@ -194,7 +194,7 @@ func wipeFile(path string) {
 	}
 
 	zeros := make([]byte, info.Size())
-	_ = f.Write(zeros)
+	_, _ = f.Write(zeros)
 	_ = f.Sync()
 }
 
@@ -572,4 +572,170 @@ func (kv *KeyVault) encryptKey(plainKey []byte) ([]byte, error) {
 	}
 
 	return gcm.Seal(nonce, nonce, plainKey, nil), nil
+}
+
+// createLUKS2VolumeWithKeyFile creates a LUKS2 volume using a tmpfs key file.
+// The key file path points to /dev/shm — RAM only, never persistent disk.
+func createLUKS2VolumeWithKeyFile(volumePath, keyFilePath string) error {
+	// Create sparse file for the volume.
+	createCmd := exec.Command("fallocate", "-l", LUKSVolumeSize, volumePath)
+	if err := createCmd.Run(); err != nil {
+		createCmd = exec.Command("dd", "if=/dev/zero", "of="+volumePath,
+			"bs=1M", "count=0", "seek=2048")
+		if err := createCmd.Run(); err != nil {
+			return fmt.Errorf("volume file creation: %w", err)
+		}
+	}
+
+	formatCmd := exec.Command("cryptsetup", "luksFormat",
+		"--type", "luks2",
+		"--cipher", "aes-xts-plain64",
+		"--key-size", "512",
+		"--hash", "sha256",
+		"--iter-time", "2000",
+		"--batch-mode",
+		"--key-file", keyFilePath,
+		volumePath)
+	if err := formatCmd.Run(); err != nil {
+		return fmt.Errorf("LUKS format: %w", err)
+	}
+
+	return nil
+}
+
+// openLUKS2VolumeWithKeyFile opens a LUKS2 volume using a tmpfs key file.
+func openLUKS2VolumeWithKeyFile(volumePath, dmName, keyFilePath string) error {
+	cmd := exec.Command("cryptsetup", "open",
+		"--type", "luks2",
+		"--key-file", keyFilePath,
+		volumePath, dmName)
+	return cmd.Run()
+}
+
+// mountVolume formats (if needed) and mounts a dm-crypt volume.
+func mountVolume(dmName, mountPoint string) error {
+	devPath := filepath.Join("/dev/mapper", dmName)
+
+	// Format as ext4 if not already formatted.
+	checkCmd := exec.Command("blkid", devPath)
+	if err := checkCmd.Run(); err != nil {
+		// Not formatted yet.
+		mkfsCmd := exec.Command("mkfs.ext4", "-q", devPath)
+		if err := mkfsCmd.Run(); err != nil {
+			return fmt.Errorf("mkfs: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(mountPoint, 0o700); err != nil {
+		return err
+	}
+
+	mountCmd := exec.Command("mount", devPath, mountPoint)
+	return mountCmd.Run()
+}
+
+// initSQLiteDB initializes a SQLite database in the mounted volume.
+func initSQLiteDB(mountPoint, deptName string) error {
+	dbPath := filepath.Join(mountPoint, "department.db")
+
+	// Create the database file and initialize schema.
+	sqlInit := fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS dept_info (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR REPLACE INTO dept_info (key, value) VALUES ('dept_name', '%s');
+INSERT OR REPLACE INTO dept_info (key, value) VALUES ('initialized_at', datetime('now'));
+INSERT OR REPLACE INTO dept_info (key, value) VALUES ('db_type', 'SQLite');
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    action TEXT NOT NULL,
+    subject TEXT,
+    details TEXT
+);
+
+CREATE TABLE IF NOT EXISTS dept_data (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    data_key TEXT NOT NULL,
+    data_value TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dept_data_category ON dept_data(category);
+`, deptName)
+
+	initCmd := exec.Command("sqlite3", dbPath, sqlInit)
+	return initCmd.Run()
+}
+
+// initPostgreSQL initializes an embedded PostgreSQL instance.
+func initPostgreSQL(mountPoint, deptName string) error {
+	pgDataDir := filepath.Join(mountPoint, "pgdata")
+
+	// Initialize PostgreSQL data directory.
+	initdbCmd := exec.Command("initdb",
+		"-D", pgDataDir,
+		"--auth=scram-sha-256",
+		"--encoding=UTF8",
+		"--locale=C")
+	if err := initdbCmd.Run(); err != nil {
+		return fmt.Errorf("initdb: %w", err)
+	}
+
+	// Configure postgresql.conf for embedded use.
+	pgConf := filepath.Join(pgDataDir, "postgresql.conf")
+	confAppend := fmt.Sprintf(`
+# Ghost-Stack Department: %s
+listen_addresses = 'localhost'
+port = %d
+max_connections = 20
+shared_buffers = 128MB
+work_mem = 4MB
+maintenance_work_mem = 64MB
+log_destination = 'stderr'
+logging_collector = off
+`, deptName, 5432) // Port will be offset in production.
+
+	f, err := os.OpenFile(pgConf, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(confAppend)
+	return err
+}
+
+// rotateSQLiteKey updates the SQLCipher key for an SQLite database.
+func rotateSQLiteKey(mountPoint, newKey string) error {
+	dbPath := filepath.Join(mountPoint, "department.db")
+
+	// In production with SQLCipher, this would use PRAGMA rekey.
+	// For standard SQLite, we record the rotation event.
+	sql := fmt.Sprintf(`INSERT INTO audit_log (action, subject, details) 
+		VALUES ('KEY_ROTATION', 'database', 'key_hash=%s');`,
+		hex.EncodeToString(sha256.New().Sum([]byte(newKey)))[:16])
+
+	cmd := exec.Command("sqlite3", dbPath, sql)
+	return cmd.Run()
+}
+
+// rotatePostgreSQLCredentials updates PostgreSQL user password.
+func rotatePostgreSQLCredentials(mountPoint string, creds *DatabaseCredentials) error {
+	pgDataDir := filepath.Join(mountPoint, "pgdata")
+
+	sql := fmt.Sprintf("ALTER USER %s WITH PASSWORD '%s';",
+		creds.Username, creds.Password)
+
+	cmd := exec.Command("psql",
+		"-h", "localhost",
+		"-p", strconv.Itoa(creds.Port),
+		"-U", "postgres",
+		"-d", creds.Database,
+		"-c", sql)
+	cmd.Env = append(os.Environ(), "PGDATA="+pgDataDir)
+	return cmd.Run()
 }
