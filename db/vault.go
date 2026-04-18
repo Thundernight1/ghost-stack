@@ -570,3 +570,6 @@ func (kv *KeyVault) encryptKey(plainKey []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
+
+	return gcm.Seal(nonce, nonce, plainKey, nil), nil
+}
