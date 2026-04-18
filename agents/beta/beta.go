@@ -511,7 +511,7 @@ func (ab *AgentBeta) sendAlert(alert Alert) {
 	header := fmt.Sprintf("BETA:%d:", len(data))
 	_, _ = ab.alertConn.Write([]byte(header))
 	// Ignore errors on the second write, just try our best.
-	_ = ab.alertConn.Write(data)
+	_, _ = ab.alertConn.Write(data)
 }
 
 // --- Platform abstraction stubs ---

@@ -144,10 +144,11 @@ func initialize() error {
 	deptManager = namespace.NewDepartmentManager(basePath, hierarchyTree)
 
 	// Initialize session manager.
-	sessionManager, err = auth.NewSessionManager()
+	sessionManager, err := auth.NewSessionManager()
 	if err != nil {
 		return fmt.Errorf("session manager: %w", err)
 	}
+	_ = sessionManager
 
 	// Initialize key vault (Gap 4: host-only key management).
 	keyVault, err = db.NewKeyVault(basePath + "/vault")
