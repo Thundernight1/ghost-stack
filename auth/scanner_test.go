@@ -83,7 +83,7 @@ func TestIntegrityScanner_SendResult(t *testing.T) {
 
 func TestHashFile(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.txt")
-	os.WriteFile(tmpFile, []byte("hello world\n"), 0644)
+	_ = os.WriteFile(tmpFile, []byte("hello world\n"), 0644)
 
 	// sha256 of "hello world\n"
 	expected := "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"

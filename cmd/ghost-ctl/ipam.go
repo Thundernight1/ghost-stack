@@ -147,7 +147,7 @@ func (ipam *IPAM) Allocate(deptID int) (*SubnetAllocation, error) {
 
 	// Persist to database.
 	if ipam.db != nil {
-		ipam.db.Exec(`
+		_, _ = ipam.db.Exec(`
 			INSERT INTO ip_allocations (ip_address, dept_id) VALUES (?, ?)
 			ON CONFLICT(ip_address) DO UPDATE SET dept_id = excluded.dept_id
 		`, alloc.ContainerIP, deptID)
@@ -171,7 +171,7 @@ func (ipam *IPAM) Release(deptID int) error {
 
 	// Remove from database.
 	if ipam.db != nil {
-		ipam.db.Exec(`DELETE FROM ip_allocations WHERE dept_id = ?`, deptID)
+		_, _ = ipam.db.Exec(`DELETE FROM ip_allocations WHERE dept_id = ?`, deptID)
 	}
 
 	return nil

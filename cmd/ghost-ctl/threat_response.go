@@ -113,7 +113,7 @@ func (trh *ThreatResponseHandler) Start() error {
 	}
 
 	// Set socket permissions — only ghost-agent group can write.
-	os.Chmod(trh.config.AlertSocketPath, 0o660)
+	_ = os.Chmod(trh.config.AlertSocketPath, 0o660)
 
 	trh.wg.Add(1)
 	go trh.acceptLoop()
@@ -282,7 +282,7 @@ func (trh *ThreatResponseHandler) handleThreatActorProfiled(alert *BetaAlert) {
 		if ttpSlice, ok := ttpRaw.([]interface{}); ok {
 			for _, t := range ttpSlice {
 				if s, ok := t.(string); ok {
-					ttps = append(ttps, s)
+					ttps = append(ttps, s); _ = ttps
 				}
 			}
 		}
@@ -291,7 +291,7 @@ func (trh *ThreatResponseHandler) handleThreatActorProfiled(alert *BetaAlert) {
 		if toolSlice, ok := toolsRaw.([]interface{}); ok {
 			for _, t := range toolSlice {
 				if s, ok := t.(string); ok {
-					tools = append(tools, s)
+					tools = append(tools, s); _ = tools
 				}
 			}
 		}

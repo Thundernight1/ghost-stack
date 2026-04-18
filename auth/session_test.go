@@ -126,7 +126,7 @@ func TestAuthenticationFlow(t *testing.T) {
 		AAGUID:            [16]byte{1},
 		DeviceFingerprint: fingerprint,
 	}
-	sm.RegisterDevice(email, att)
+	_ = sm.RegisterDevice(email, att)
 
 	// 2. Start Auth
 	challenge, err := sm.StartAuthentication(fingerprint)

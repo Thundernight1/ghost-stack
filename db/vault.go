@@ -194,8 +194,8 @@ func wipeFile(path string) {
 	}
 
 	zeros := make([]byte, info.Size())
-	f.Write(zeros)
-	f.Sync()
+	_ = f.Write(zeros)
+	_ = f.Sync()
 }
 
 // KeyVault manages encryption keys and database credentials for all departments.
@@ -574,130 +574,7 @@ func (kv *KeyVault) encryptKey(plainKey []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plainKey, nil), nil
 }
 
-// createLUKS2Volume creates a LUKS2 encrypted volume file.
-// DEPRECATED: Use createLUKS2VolumeWithKeyFile via HostKeyStore.UseKey.
-func createLUKS2Volume(volumePath string, key []byte) error {
-	// Create sparse file for the volume.
-	createCmd := exec.Command("fallocate", "-l", LUKSVolumeSize, volumePath)
-	if err := createCmd.Run(); err != nil {
-		// Fallback for filesystems that don't support fallocate.
-		createCmd = exec.Command("dd", "if=/dev/zero", "of="+volumePath,
-			"bs=1M", "count=0", "seek=2048")
-		if err := createCmd.Run(); err != nil {
-			return fmt.Errorf("volume file creation: %w", err)
-		}
-	}
 
-	// Format as LUKS2 with the provided key via stdin.
-	keyFile := volumePath + ".key"
-	if err := os.WriteFile(keyFile, key, 0o600); err != nil {
-		return fmt.Errorf("key file write: %w", err)
-	}
-	defer os.Remove(keyFile)
-
-	formatCmd := exec.Command("cryptsetup", "luksFormat",
-		"--type", "luks2",
-		"--cipher", "aes-xts-plain64",
-		"--key-size", "512",
-		"--hash", "sha256",
-		"--iter-time", "2000",
-		"--batch-mode",
-		"--key-file", keyFile,
-		volumePath)
-	if err := formatCmd.Run(); err != nil {
-		return fmt.Errorf("LUKS format: %w", err)
-	}
-
-	return nil
-}
-
-// createLUKS2VolumeWithKeyFile creates a LUKS2 volume using a tmpfs key file.
-// The key file path points to /dev/shm — RAM only, never persistent disk.
-func createLUKS2VolumeWithKeyFile(volumePath, keyFilePath string) error {
-	// Create sparse file for the volume.
-	createCmd := exec.Command("fallocate", "-l", LUKSVolumeSize, volumePath)
-	if err := createCmd.Run(); err != nil {
-		createCmd = exec.Command("dd", "if=/dev/zero", "of="+volumePath,
-			"bs=1M", "count=0", "seek=2048")
-		if err := createCmd.Run(); err != nil {
-			return fmt.Errorf("volume file creation: %w", err)
-		}
-	}
-
-	formatCmd := exec.Command("cryptsetup", "luksFormat",
-		"--type", "luks2",
-		"--cipher", "aes-xts-plain64",
-		"--key-size", "512",
-		"--hash", "sha256",
-		"--iter-time", "2000",
-		"--batch-mode",
-		"--key-file", keyFilePath,
-		volumePath)
-	if err := formatCmd.Run(); err != nil {
-		return fmt.Errorf("LUKS format: %w", err)
-	}
-
-	return nil
-}
-
-// openLUKS2VolumeWithKeyFile opens a LUKS2 volume using a tmpfs key file.
-func openLUKS2VolumeWithKeyFile(volumePath, dmName, keyFilePath string) error {
-	cmd := exec.Command("cryptsetup", "open",
-		"--type", "luks2",
-		"--key-file", keyFilePath,
-		volumePath, dmName)
-	return cmd.Run()
-}
-
-// openLUKS2Volume opens a LUKS2 volume with the provided key.
-func openLUKS2Volume(volumePath, dmName string, key []byte) error {
-	keyFile := volumePath + ".key"
-	if err := os.WriteFile(keyFile, key, 0o600); err != nil {
-		return err
-	}
-	defer os.Remove(keyFile)
-
-	cmd := exec.Command("cryptsetup", "open",
-		"--type", "luks2",
-		"--key-file", keyFile,
-		volumePath, dmName)
-	return cmd.Run()
-}
-
-// mountVolume formats (if needed) and mounts a dm-crypt volume.
-func mountVolume(dmName, mountPoint string) error {
-	devPath := filepath.Join("/dev/mapper", dmName)
-
-	// Format as ext4 if not already formatted.
-	checkCmd := exec.Command("blkid", devPath)
-	if err := checkCmd.Run(); err != nil {
-		// Not formatted yet.
-		mkfsCmd := exec.Command("mkfs.ext4", "-q", devPath)
-		if err := mkfsCmd.Run(); err != nil {
-			return fmt.Errorf("mkfs: %w", err)
-		}
-	}
-
-	if err := os.MkdirAll(mountPoint, 0o700); err != nil {
-		return err
-	}
-
-	mountCmd := exec.Command("mount", devPath, mountPoint)
-	return mountCmd.Run()
-}
-
-// initSQLiteDB initializes a SQLite database in the mounted volume.
-func initSQLiteDB(mountPoint, deptName string) error {
-	dbPath := filepath.Join(mountPoint, "department.db")
-
-	// Create the database file and initialize schema.
-	sqlInit := fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS dept_info (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-INSERT OR REPLACE INTO dept_info (key, value) VALUES ('dept_name', '%s');
 INSERT OR REPLACE INTO dept_info (key, value) VALUES ('initialized_at', datetime('now'));
 INSERT OR REPLACE INTO dept_info (key, value) VALUES ('db_type', 'SQLite');
 

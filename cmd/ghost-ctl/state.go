@@ -261,10 +261,10 @@ func (sm *StateManager) DeleteDepartment(deptID int) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
-	tx.Exec("DELETE FROM ip_allocations WHERE dept_id = ?", deptID)
-	tx.Exec("DELETE FROM departments WHERE dept_id = ?", deptID)
+	_, _ = tx.Exec("DELETE FROM ip_allocations WHERE dept_id = ?", deptID)
+	_, _ = tx.Exec("DELETE FROM departments WHERE dept_id = ?", deptID)
 
 	return tx.Commit()
 }
@@ -283,7 +283,7 @@ func (sm *StateManager) RecoverRunningDepartments() ([]*DepartmentState, error) 
 		procPath := fmt.Sprintf("/proc/%d/status", dept.PID)
 		if _, err := os.Stat(procPath); err != nil {
 			// Process is gone — mark as stopped.
-			sm.UpdateStatus(dept.DeptID, "stopped")
+			_ = sm.UpdateStatus(dept.DeptID, "stopped")
 			continue
 		}
 		alive = append(alive, dept)

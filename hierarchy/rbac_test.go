@@ -156,9 +156,9 @@ func TestRegisterDepartment_Hierarchy(t *testing.T) {
 	ht := newTestTree(t)
 
 	// ROOT → DIRECTOR → MANAGER → STAFF
-	ht.RegisterDepartment(0, "HQ", TierRoot, -1)
-	ht.RegisterDepartment(1, "Engineering", TierDirector, 0)
-	ht.RegisterDepartment(10, "Backend", TierManager, 1)
+	_, _ = ht.RegisterDepartment(0, "HQ", TierRoot, -1)
+	_, _ = ht.RegisterDepartment(1, "Engineering", TierDirector, 0)
+	_, _ = ht.RegisterDepartment(10, "Backend", TierManager, 1)
 	_, err := ht.RegisterDepartment(100, "dev-alice", TierStaff, 10)
 	if err != nil {
 		t.Fatalf("full hierarchy registration failed: %v", err)
@@ -167,7 +167,7 @@ func TestRegisterDepartment_Hierarchy(t *testing.T) {
 
 func TestRegisterDepartment_DuplicateID(t *testing.T) {
 	ht := newTestTree(t)
-	ht.RegisterDepartment(0, "HQ", TierRoot, -1)
+	_, _ = ht.RegisterDepartment(0, "HQ", TierRoot, -1)
 
 	_, err := ht.RegisterDepartment(0, "Duplicate", TierRoot, -1)
 	if err == nil {
@@ -186,8 +186,8 @@ func TestRegisterDepartment_InvalidParent(t *testing.T) {
 
 func TestRegisterDepartment_ParentTierViolation(t *testing.T) {
 	ht := newTestTree(t)
-	ht.RegisterDepartment(0, "HQ", TierRoot, -1)
-	ht.RegisterDepartment(10, "Backend", TierManager, 0)
+	_, _ = ht.RegisterDepartment(0, "HQ", TierRoot, -1)
+	_, _ = ht.RegisterDepartment(10, "Backend", TierManager, 0)
 
 	// STAFF cannot be parent of MANAGER.
 	_, err := ht.RegisterDepartment(100, "dev-alice", TierStaff, 0)
@@ -197,7 +197,7 @@ func TestRegisterDepartment_ParentTierViolation(t *testing.T) {
 	}
 
 	// STAFF cannot be parent of anything (same tier).
-	ht.RegisterDepartment(50, "dev-bob", TierStaff, 10)
+	_, _ = ht.RegisterDepartment(50, "dev-bob", TierStaff, 10)
 	_, err = ht.RegisterDepartment(51, "invalid", TierStaff, 50)
 	if err == nil {
 		t.Error("expected error: STAFF cannot be parent of STAFF")
@@ -206,8 +206,8 @@ func TestRegisterDepartment_ParentTierViolation(t *testing.T) {
 
 func TestIsolationKeysAreUnique(t *testing.T) {
 	ht := newTestTree(t)
-	ht.RegisterDepartment(0, "HQ", TierRoot, -1)
-	ht.RegisterDepartment(1, "Engineering", TierDirector, 0)
+	_, _ = ht.RegisterDepartment(0, "HQ", TierRoot, -1)
+	_, _ = ht.RegisterDepartment(1, "Engineering", TierDirector, 0)
 
 	dept0, _ := ht.GetDepartment(0)
 	dept1, _ := ht.GetDepartment(1)
@@ -228,12 +228,12 @@ func setupRBACTree(t *testing.T) *HierarchyTree {
 	// Build test hierarchy:
 	// ROOT(0) → DIRECTOR(1) → MANAGER(10) → STAFF(100)
 	//                       → MANAGER(11) → STAFF(110)
-	ht.RegisterDepartment(0, "HQ", TierRoot, -1)
-	ht.RegisterDepartment(1, "Engineering", TierDirector, 0)
-	ht.RegisterDepartment(10, "Backend", TierManager, 1)
-	ht.RegisterDepartment(11, "Frontend", TierManager, 1)
-	ht.RegisterDepartment(100, "dev-alice", TierStaff, 10)
-	ht.RegisterDepartment(110, "dev-bob", TierStaff, 11)
+	_, _ = ht.RegisterDepartment(0, "HQ", TierRoot, -1)
+	_, _ = ht.RegisterDepartment(1, "Engineering", TierDirector, 0)
+	_, _ = ht.RegisterDepartment(10, "Backend", TierManager, 1)
+	_, _ = ht.RegisterDepartment(11, "Frontend", TierManager, 1)
+	_, _ = ht.RegisterDepartment(100, "dev-alice", TierStaff, 10)
+	_, _ = ht.RegisterDepartment(110, "dev-bob", TierStaff, 11)
 
 	return ht
 }
@@ -438,13 +438,13 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ht.CanAccess(0, 100)
-			ht.CanAccess(1, 110)
-			ht.CanAccess(100, 0)
-			ht.ListVisible(0)
-			ht.ListVisible(100)
-			ht.GetDepartment(10)
-			ht.Status(1)
+			_, _ = ht.CanAccess(0, 100)
+			_, _ = ht.CanAccess(1, 110)
+			_, _ = ht.CanAccess(100, 0)
+			_, _ = ht.ListVisible(0)
+			_, _ = ht.ListVisible(100)
+			_, _ = ht.GetDepartment(10)
+			_, _ = ht.Status(1)
 		}()
 	}
 	wg.Wait()

@@ -61,7 +61,7 @@ type AuditEntry struct {
 var (
 	hierarchyTree   *hierarchy.HierarchyTree
 	deptManager     *namespace.DepartmentManager
-	sessionManager  *auth.SessionManager
+
 	keyVault        *db.KeyVault
 	ed25519PubKey   ed25519.PublicKey
 	ed25519PrivKey  ed25519.PrivateKey
@@ -301,7 +301,7 @@ func cmdDeptSpawn() {
 
 	// --- Gap 2: Persist state to SQLite ---
 	if stateManager != nil {
-		stateManager.SaveDepartment(&DepartmentState{
+		_ = stateManager.SaveDepartment(&DepartmentState{
 			DeptID:        deptID,
 			DeptName:      deptName,
 			Tier:          tier.String(),
@@ -553,6 +553,6 @@ func appendAudit(entry AuditEntry) {
 	}
 	defer f.Close()
 
-	f.Write(data)
-	f.Write([]byte("\n"))
+	_, _ = f.Write(data)
+	_, _ = f.Write([]byte("\n"))
 }

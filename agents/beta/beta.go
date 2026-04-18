@@ -486,34 +486,7 @@ func (ab *AgentBeta) processL4Event(event LayerEvent) {
 // --- Proactive Response Trigger ---
 // Called periodically by the correlator.
 
-func (ab *AgentBeta) checkProactiveResponse(profile *AttackerProfile) {
-	profile.mu.Lock()
-	score := profile.ThreatScore
-	l2Hits := profile.L2Hits
-	ip := profile.SrcIP
-	profile.mu.Unlock()
 
-	// ONLY trigger if threat_score > 80 AND l2_hits > 0.
-	if score > 80 && l2Hits > 0 {
-		ab.sendAlert(Alert{
-			Timestamp:   time.Now(),
-			Severity:    "ALERT",
-			Source:      "AGENT-BETA",
-			EventType:   "THREAT_ACTOR_PROFILED",
-			SourceIP:    ip,
-			ThreatScore: score,
-			Profile:     profile,
-			Details: map[string]interface{}{
-				"action":     "PERMANENT_BLOCK_RECOMMENDED",
-				"ttp_tags":   profile.TTPTags,
-				"tools":      profile.ToolsDetected,
-				"l1_hits":    profile.L1Hits,
-				"l2_hits":    profile.L2Hits,
-				"l3_drops":   profile.L3Drops,
-			},
-		})
-	}
-}
 
 // --- Alert Sending ---
 
@@ -536,12 +509,9 @@ func (ab *AgentBeta) sendAlert(alert Alert) {
 	}
 
 	header := fmt.Sprintf("BETA:%d:", len(data))
-	if _, err := ab.alertConn.Write([]byte(header)); err != nil {
-		ab.alertConn.Close()
-		ab.alertConn = nil
-		return
-	}
-	ab.alertConn.Write(data)
+	_, _ = ab.alertConn.Write([]byte(header))
+	// Ignore errors on the second write, just try our best.
+	_ = ab.alertConn.Write(data)
 }
 
 // --- Platform abstraction stubs ---
