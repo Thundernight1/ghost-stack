@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"encoding/json"
 	"net"
 	"os"
