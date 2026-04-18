@@ -80,14 +80,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize subsystems.
-	if err := initialize(); err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-ctl: initialization failed: %v\n", err)
-		os.Exit(1)
+	cmd := os.Args[1]
+
+	// Initialize subsystems unless it's a version or help command.
+	if cmd != "version" && cmd != "help" && cmd != "--help" && cmd != "-h" {
+		if err := initialize(); err != nil {
+			fmt.Fprintf(os.Stderr, "ghost-ctl: initialization failed: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Parse command.
-	switch os.Args[1] {
+	switch cmd {
 	case "dept":
 		if len(os.Args) < 3 {
 			printUsage()
