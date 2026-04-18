@@ -1,0 +1,50 @@
+[Unit]
+Description=GHOST-STACK AGENT-BETA Firewall Observer
+Documentation=https://ghost-stack.internal/docs/agent-beta
+After=ghost-orchestrator.service network.target
+BindsTo=ghost-orchestrator.service
+PartOf=ghost-orchestrator.service
+
+[Service]
+Type=simple
+ExecStart=/opt/ghost-stack/bin/agent-beta \
+    --nflog-group=1 \
+    --l2-perf-map=/sys/fs/bpf/ghost_l2_events \
+    --l3-drop-map=/sys/fs/bpf/ghost_l3_drops \
+    --alert-socket=/var/run/ghost-stack/alert.sock
+Restart=on-failure
+RestartSec=3
+
+# AGENT-BETA needs more capabilities than ALPHA for firewall monitoring.
+User=ghost-agent
+Group=ghost-agent
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+
+# Capabilities: BPF for map access, NET_ADMIN for nflog, PERFMON for perf events.
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+
+# Allow network access for nflog netlink socket.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+# Read-only filesystem access.
+ReadOnlyPaths=/
+ReadWritePaths=/var/run/ghost-stack/alert.sock
+
+# Logging.
+StandardOutput=null
+StandardError=journal
+SyslogIdentifier=ghost-agent-beta
+
+# Resource limits — AGENT-BETA tracks up to 50K attacker profiles.
+MemoryMax=1G
+CPUQuota=50%
+TasksMax=32
+
+[Install]
+WantedBy=ghost-orchestrator.service

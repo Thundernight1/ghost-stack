@@ -1,0 +1,237 @@
+#!/usr/sbin/nft -f
+#
+# GHOST-STACK CORE — Layer 1: Deception Firewall
+#
+# Technology: nftables (NOT iptables — different syntax/behavior)
+#
+# Behavior:
+#   - Appears as a permissive enterprise firewall
+#   - Responds to ping, returns valid banners on common ports
+#   - All responses are protocol-compliant but content is synthetic garbage
+#   - Connection rate limiting appears as "busy server" not firewall block
+#   - nflog group 1: all events → AGENT-BETA ring buffer (NOT disk)
+#   - SYN flood: silently absorb, log attacker IP, continue accepting
+#   - Geolocation-aware: threat ASNs get 10-50ms artificial delay
+#
+# CRITICAL: NO persistent logs written to disk.
+# All events go to nflog group 1 → AGENT-BETA reads via netlink.
+
+flush ruleset
+
+# --- Define sets for deception and threat intelligence ---
+
+define DECEPTION_PORTS = { 22, 80, 443, 8080, 3306, 5432, 6379, 27017 }
+
+# Known threat actor ASN IP ranges — get subtly slower responses.
+# These are placeholder ranges; in production, populated by threat intel feed.
+define THREAT_ASNS = {
+    # Example threat ASN ranges (Tor exit nodes, known bulletproof hosting, etc.)
+    185.220.100.0/24,
+    185.220.101.0/24,
+    23.129.64.0/24,
+    198.98.48.0/20,
+    45.154.255.0/24,
+    171.25.193.0/24,
+    109.70.100.0/24
+}
+
+# Internal/orchestrator IPs that should bypass deception entirely.
+define ORCHESTRATOR_IPS = {
+    10.200.0.1,
+    10.200.0.2,
+    127.0.0.1
+}
+
+# --- Table: inet ghost_l1 — Layer 1 Deception Firewall ---
+
+table inet ghost_l1 {
+
+    # --- Sets ---
+
+    # Dynamic set: tracked SYN flood sources (auto-populated).
+    set syn_flood_src {
+        type ipv4_addr
+        flags dynamic, timeout
+        timeout 5m
+        size 65535
+    }
+
+    # Dynamic set: connection rate tracking per source IP.
+    set conn_rate {
+        type ipv4_addr
+        flags dynamic, timeout
+        timeout 60s
+        size 65535
+    }
+
+    # Dynamic set: port scan detection (source IPs hitting multiple ports).
+    set port_scanners {
+        type ipv4_addr
+        flags dynamic, timeout
+        timeout 10m
+        size 16384
+    }
+
+    # Counter: total deception connections served.
+    counter deception_total {
+        packets 0 bytes 0
+    }
+
+    # Counter: SYN floods absorbed.
+    counter syn_flood_absorbed {
+        packets 0 bytes 0
+    }
+
+    # --- Chains ---
+
+    # Pre-routing: geolocation-aware artificial delay for threat ASNs.
+    chain prerouting {
+        type filter hook prerouting priority -150; policy accept;
+
+        # Log ALL incoming traffic to nflog group 1 (AGENT-BETA).
+        # nflog is kernel-internal → NO disk writes.
+        log prefix "GHOST-L1-PRE:" group 1
+
+        # Skip delay for orchestrator traffic.
+        ip saddr $ORCHESTRATOR_IPS accept
+
+        # Artificial delay for known threat ASNs (appears as network congestion).
+        # Queue to userspace delay handler via nfqueue.
+        ip saddr $THREAT_ASNS queue num 10 bypass
+    }
+
+    # Input chain: main deception filter.
+    chain input {
+        type filter hook input priority 0; policy accept;
+
+        # --- Connection tracking ---
+        ct state established,related accept
+        ct state invalid drop
+
+        # --- ICMP: respond normally (appear as real server) ---
+        ip protocol icmp icmp type echo-request \
+            limit rate 10/second burst 20 packets \
+            accept
+        ip protocol icmp icmp type echo-request \
+            log prefix "GHOST-L1-ICMP-FLOOD:" group 1 drop
+
+        ip6 nexthdr icmpv6 icmpv6 type echo-request \
+            limit rate 10/second burst 20 packets \
+            accept
+
+        # --- SYN flood protection ---
+        # Silently absorb SYN floods — log source but continue accepting.
+        # NEVER reveal capacity limit. Attacker sees "busy server" behavior.
+        tcp flags syn tcp flags != ack \
+            limit rate over 500/second burst 1000 packets \
+            update @syn_flood_src { ip saddr } \
+            counter name syn_flood_absorbed \
+            log prefix "GHOST-L1-SYNFLOOD:" group 1 \
+            accept
+
+        # --- Connection rate limiting ---
+        # Appears as "server too busy" not as firewall block.
+        tcp flags syn \
+            meter conn_meter { ip saddr limit rate 50/second burst 100 packets } \
+            accept
+
+        # Rate-exceeded connections: add brief delay, still accept.
+        # This makes the firewall look like an overloaded server.
+        tcp flags syn \
+            update @conn_rate { ip saddr } \
+            log prefix "GHOST-L1-RATE:" group 1 \
+            accept
+
+        # --- Deception ports: route to fake service responders ---
+
+        # SSH (22): fake OpenSSH banner.
+        tcp dport 22 \
+            counter name deception_total \
+            log prefix "GHOST-L1-SSH:" group 1 \
+            accept
+
+        # HTTP (80): fake web server with synthetic content.
+        tcp dport 80 \
+            counter name deception_total \
+            log prefix "GHOST-L1-HTTP:" group 1 \
+            accept
+
+        # HTTPS (443): TLS with decoy certificate.
+        tcp dport 443 \
+            counter name deception_total \
+            log prefix "GHOST-L1-HTTPS:" group 1 \
+            accept
+
+        # Alt HTTP (8080): fake application server.
+        tcp dport 8080 \
+            counter name deception_total \
+            log prefix "GHOST-L1-APP:" group 1 \
+            accept
+
+        # MySQL (3306): fake MySQL protocol.
+        tcp dport 3306 \
+            counter name deception_total \
+            log prefix "GHOST-L1-MYSQL:" group 1 \
+            accept
+
+        # PostgreSQL (5432): fake PostgreSQL protocol.
+        tcp dport 5432 \
+            counter name deception_total \
+            log prefix "GHOST-L1-PGSQL:" group 1 \
+            accept
+
+        # Redis (6379): fake Redis protocol.
+        tcp dport 6379 \
+            counter name deception_total \
+            log prefix "GHOST-L1-REDIS:" group 1 \
+            accept
+
+        # MongoDB (27017): fake MongoDB protocol.
+        tcp dport 27017 \
+            counter name deception_total \
+            log prefix "GHOST-L1-MONGO:" group 1 \
+            accept
+
+        # --- Port scan detection ---
+        # If a source hits more than 20 different ports in 5 seconds,
+        # flag it but still accept (to continue gathering intel).
+        tcp flags syn \
+            meter scan_meter { ip saddr . tcp dport limit rate 20/second } \
+            accept
+
+        tcp flags syn \
+            update @port_scanners { ip saddr } \
+            log prefix "GHOST-L1-PORTSCAN:" group 1 \
+            accept
+
+        # --- Catch-all: accept everything else ---
+        # Layer 1 is permissive by design — real blocking is at Layer 3 (XDP).
+        log prefix "GHOST-L1-OTHER:" group 1
+        accept
+    }
+
+    # Output chain: allow all outbound (deception responders need to reply).
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+
+    # Forward chain: drop all forwarding (no routing through L1).
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+}
+
+# --- Table: netdev ghost_l1_netdev ---
+# Direct NIC-level logging for maximum visibility.
+
+table netdev ghost_l1_dev {
+    chain ingress {
+        # This chain is attached per-interface via:
+        # nft add chain netdev ghost_l1_dev ingress '{ type filter hook ingress device eth0 priority 0; }'
+        type filter hook ingress device "eth0" priority 0; policy accept;
+
+        # Log raw packet metadata to nflog group 1.
+        # AGENT-BETA correlates these with higher-layer events.
+        log prefix "GHOST-L1-RAW:" group 1 accept
+    }
+}

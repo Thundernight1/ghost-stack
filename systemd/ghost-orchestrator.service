@@ -1,0 +1,49 @@
+[Unit]
+Description=GHOST-STACK CORE Orchestrator Control Plane
+Documentation=https://ghost-stack.internal/docs
+After=network.target local-fs.target
+Wants=network-online.target
+Before=ghost-agent-beta.service
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/ghost-ctl self-check
+ExecStart=/usr/bin/ghost-ctl daemon
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+
+# Security hardening.
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# Required capabilities for namespace management.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE
+
+# Ensure cgroups v2 is available.
+Delegate=yes
+
+# Logging: append-only to immutable partition.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ghost-orchestrator
+
+# Resource limits for the orchestrator itself.
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=4096
+
+# Working directory.
+WorkingDirectory=/var/lib/ghost-stack
+RuntimeDirectory=ghost-stack
+StateDirectory=ghost-stack
+
+# Environment.
+Environment=GHOST_LOG_LEVEL=info
+Environment=GHOST_AUDIT_PATH=/var/lib/ghost-stack/audit/audit.log
+Environment=GHOST_ALERT_SOCKET=/var/run/ghost-stack/alert.sock
+
+[Install]
+WantedBy=multi-user.target
