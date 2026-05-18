@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -538,7 +539,7 @@ func (kv *KeyVault) generateCredentials(deptID int, deptName string, dbType Data
 	creds := &DatabaseCredentials{
 		Username:  fmt.Sprintf("ghost_dept_%d", deptID),
 		Password:  password,
-		Database:  fmt.Sprintf("ghost_%s", deptName),
+		Database:  fmt.Sprintf("ghost_%s", strings.ReplaceAll(deptName, " ", "_")),
 		Host:      "localhost",
 		CreatedAt: now,
 		ExpiresAt: now.Add(CredentialRotationInterval),
@@ -634,6 +635,16 @@ func mountVolume(dmName, mountPoint string) error {
 	return mountCmd.Run()
 }
 
+// sanitizeSQLString escapes single quotes in a string for safe use in SQL literals.
+func sanitizeSQLString(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sanitizePostgresIdentifier escapes double quotes in a string for safe use as a PostgreSQL identifier.
+func sanitizePostgresIdentifier(s string) string {
+	return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
+}
+
 // initSQLiteDB initializes a SQLite database in the mounted volume.
 func initSQLiteDB(mountPoint, deptName string) error {
 	dbPath := filepath.Join(mountPoint, "department.db")
@@ -666,7 +677,7 @@ CREATE TABLE IF NOT EXISTS dept_data (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_dept_data_category ON dept_data(category);
-`, deptName)
+`, sanitizeSQLString(deptName))
 
 	initCmd := exec.Command("sqlite3", dbPath, sqlInit)
 	return initCmd.Run()
@@ -715,8 +726,7 @@ func rotateSQLiteKey(mountPoint, newKey string) error {
 
 	// In production with SQLCipher, this would use PRAGMA rekey.
 	// For standard SQLite, we record the rotation event.
-	sql := fmt.Sprintf(`INSERT INTO audit_log (action, subject, details) 
-		VALUES ('KEY_ROTATION', 'database', 'key_hash=%s');`,
+	sql := fmt.Sprintf(`INSERT INTO audit_log (action, subject, details) VALUES ('KEY_ROTATION', 'database', 'key_hash=%s');`,
 		hex.EncodeToString(sha256.New().Sum([]byte(newKey)))[:16])
 
 	cmd := exec.Command("sqlite3", dbPath, sql)
@@ -728,7 +738,8 @@ func rotatePostgreSQLCredentials(mountPoint string, creds *DatabaseCredentials) 
 	pgDataDir := filepath.Join(mountPoint, "pgdata")
 
 	sql := fmt.Sprintf("ALTER USER %s WITH PASSWORD '%s';",
-		creds.Username, creds.Password)
+		sanitizePostgresIdentifier(creds.Username),
+		sanitizeSQLString(creds.Password))
 
 	cmd := exec.Command("psql",
 		"-h", "localhost",
