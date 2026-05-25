@@ -1,0 +1,24 @@
+# Compiled binaries and build folders
+bin/
+build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Local orchestrator database state files
+orchestrator.db
+orchestrator.db-shm
+orchestrator.db-wal
+
+# Unix domain sockets and logs
+*.sock
+*.log
+coverage.out
+coverage.html
+
+# IDEs and OS garbage
+.DS_Store
+.vscode/
+.idea/

@@ -157,6 +157,19 @@ func NewDepartmentManager(basePath string, ht *hierarchy.HierarchyTree) *Departm
 	}
 }
 
+// RegisterRecoveredContainer registers an already running container in the in-memory map.
+func (dm *DepartmentManager) RegisterRecoveredContainer(cfg ContainerConfig, pid int, cgroupPath string, startedAt time.Time) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	dm.containers[cfg.DeptID] = &RunningContainer{
+		Config:     cfg,
+		PID:        pid,
+		CgroupPath: cgroupPath,
+		StartedAt:  startedAt,
+	}
+}
+
 // SpawnDepartment creates and starts a fully isolated namespace container
 // for the given department configuration.
 //
@@ -216,7 +229,7 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 			},
 		},
 		// Ensure the child process becomes subreaper.
-		Pdeathsig: syscall.SIGKILL,
+		// Pdeathsig: syscall.SIGKILL,
 	}
 
 	// Set isolated hostname.
@@ -227,6 +240,9 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm-256color",
 	}
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	// Step 5: Start the container process.
 	if err := cmd.Start(); err != nil {

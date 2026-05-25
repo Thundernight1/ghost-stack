@@ -16,13 +16,13 @@ package layer3
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"time"
 	"unsafe"
@@ -232,8 +232,10 @@ func (am *AllowlistManager) addEntry(entry *AllowlistEntry) error {
 	// Value: 1 = allowed.
 	val := uint32(1)
 
-	if err := am.allowlistMap.Put(key, val); err != nil {
-		return fmt.Errorf("BPF map put: %w", err)
+	if am.allowlistMap != nil {
+		if err := am.allowlistMap.Put(key, val); err != nil {
+			return fmt.Errorf("BPF map put: %w", err)
+		}
 	}
 
 	entry.AddedAt = time.Now().Unix()
@@ -259,8 +261,10 @@ func (am *AllowlistManager) removeEntry(cidr string) error {
 	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
 	copy(key[4:8], ip)
 
-	if err := am.allowlistMap.Delete(key); err != nil {
-		return fmt.Errorf("BPF map delete: %w", err)
+	if am.allowlistMap != nil {
+		if err := am.allowlistMap.Delete(key); err != nil {
+			return fmt.Errorf("BPF map delete: %w", err)
+		}
 	}
 
 	delete(am.entries, cidr)
@@ -453,7 +457,7 @@ func (am *AllowlistManager) Detach() error {
 // SignUpdate creates a signed allowlist update (for orchestrator use).
 func SignUpdate(privateKey ed25519.PrivateKey, action string, entries []AllowlistEntry) (*AllowlistUpdate, error) {
 	nonce := make([]byte, 16)
-	if _, err := os.ReadFile("/dev/urandom"); err != nil {
+	if _, err := rand.Read(nonce); err != nil {
 		// Fallback: use timestamp-based nonce.
 		binary.BigEndian.PutUint64(nonce, uint64(time.Now().UnixNano()))
 	}

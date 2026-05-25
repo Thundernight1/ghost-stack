@@ -44,7 +44,7 @@ func TestNewIntegrityScanner(t *testing.T) {
 }
 
 func TestIntegrityScanner_SendResult(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "alert.sock")
+	sockPath := filepath.Join(t.TempDir(), "a.sock")
 	
 	// Create dummy UNIX domain socket listener
 	l, err := net.Listen("unix", sockPath)

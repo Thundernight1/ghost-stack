@@ -179,6 +179,23 @@ func initialize() error {
 			for _, dept := range aliveDepts {
 				fmt.Printf("  ✓ dept-%d (%s) PID=%d subnet=%s\n",
 					dept.DeptID, dept.DeptName, dept.PID, dept.SubnetCIDR)
+				
+				tier := parseTier(dept.Tier)
+				limits := namespace.DefaultCgroupLimits(tier)
+				cfg := namespace.ContainerConfig{
+					DeptID:          dept.DeptID,
+					DeptName:        dept.DeptName,
+					Tier:            tier,
+					RootFS:          dept.RootFS,
+					Hostname:        fmt.Sprintf("ghost-dept-%d", dept.DeptID),
+					Limits:          limits,
+					SubnetCIDR:      dept.SubnetCIDR,
+					ContainerIP:     dept.ContainerIP,
+					GatewayIP:       dept.GatewayIP,
+					AlertSocketPath: "/var/run/ghost-stack/alert.sock",
+					AgentBinaryPath: "/opt/ghost-stack/bin/agent-alpha",
+				}
+				deptManager.RegisterRecoveredContainer(cfg, dept.PID, dept.CgroupPath, dept.CreatedAt)
 			}
 		}
 	}

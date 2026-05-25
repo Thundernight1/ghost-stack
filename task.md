@@ -1,0 +1,23 @@
+# Task Checklist — Sandbox Namespace Execution and Dynamic Audit
+
+- [x] Step 1: Create a Native RootFS Template with Keep-Alive Init
+  - [x] Create `/var/lib/ghost-stack/templates/rootfs/sbin` and `bin` paths inside the sandbox
+  - [x] Write the `/sbin/init` keep-alive shell script inside the template
+  - [x] Copy essential shell utilities into the template
+  - [x] Make the template script executable
+- [x] Step 2: Natively Compile `ghost-ctl` inside the Linux Sandbox
+  - [x] Run `make build` inside the sandbox's `/opt/ghost-stack` directory
+  - [x] Verify ELF binary structure and successful output
+- [x] Step 3: Spawn the Custom Headquarters (ROOT) Container
+  - [x] Spawning department 0 (`Headquarters`) under `ROOT` hierarchy tier
+  - [x] Verify output status and successful return codes
+- [x] Step 4: Dynamically Audit the Namespace Boundaries and Cgroup Limits
+  - [x] Run `./build/ghost-ctl dept status 0` and inspect
+  - [x] Verify UTS hostname isolation via `nsenter`
+  - [x] Verify network interface isolation and IPAM configurations inside the namespace
+  - [x] Inspect cgroups v2 resource limits at `/sys/fs/cgroup/ghost-stack/dept-0/`
+- [x] Step 5: Test Proactive Threat Response and Quarantine Mechanics
+  - [x] Trigger `./build/ghost-ctl dept quarantine 0`
+  - [x] Verify cgroup state transition (frozen/active)
+  - [x] Verify network ruleset dropping via `nsenter` and `nftables` listing
+  - [x] Confirm memory maps snapshot output
