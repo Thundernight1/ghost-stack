@@ -1,0 +1,162 @@
+---
+title: "Quickstart"
+description: "Install dependencies, build ghost-ctl, deploy the firewall layers, and spawn your first department container."
+---
+
+This guide walks you through bringing up Ghost-Stack Core on a Linux host. You will install kernel and toolchain dependencies, build the orchestrator, deploy the four firewall layers, and spawn a department container.
+
+## Prerequisites
+
+| Component | Minimum | Recommended |
+|---|---|---|
+| Linux kernel | 6.1 (BPF CO-RE) | 6.6+ LTS |
+| Go | 1.22 | 1.22+ |
+| Clang / LLVM | 14 | 17+ |
+| libbpf | 1.0 | 1.3+ |
+| Capabilities | `CAP_BPF`, `CAP_NET_ADMIN` | run as root |
+
+CGO must be enabled. You also need `libbpf-dev` headers and the matching kernel headers for your running kernel.
+
+## 1. Install system dependencies
+
+<Tabs>
+  <Tab title="Ubuntu / Debian">
+    ```bash
+    sudo apt update
+    sudo apt install -y \
+        clang llvm libelf-dev \
+        libbpf-dev linux-headers-$(uname -r) \
+        nftables iproute2 apparmor apparmor-utils \
+        build-essential pkg-config git
+    ```
+  </Tab>
+  <Tab title="Fedora / RHEL">
+    ```bash
+    sudo dnf install -y \
+        clang llvm elfutils-libelf-devel \
+        libbpf-devel kernel-devel \
+        nftables iproute apparmor-utils \
+        gcc make pkg-config git
+    ```
+  </Tab>
+  <Tab title="Arch Linux">
+    ```bash
+    sudo pacman -S --noconfirm \
+        clang llvm libelf libbpf \
+        linux-headers nftables iproute2 \
+        apparmor base-devel git
+    ```
+  </Tab>
+</Tabs>
+
+## 2. Install Go 1.22+
+
+```bash
+wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+go version
+```
+
+## 3. Build ghost-ctl
+
+After you clone the authorized repository:
+
+```bash
+cd core
+go mod download
+go mod verify
+make all
+```
+
+`make all` runs lint, tests, and the binary build. The compiled orchestrator lands at `build/ghost-ctl`.
+
+For a manual build:
+
+```bash
+CGO_ENABLED=1 go build \
+    -ldflags="-s -w" \
+    -o build/ghost-ctl \
+    ./cmd/ghost-ctl/
+```
+
+## 4. Prepare the host state directory
+
+Ghost-Stack stores rootfs templates, snapshots, and the orchestrator database under `/var/lib/ghost-stack`. The directory must be traversable by mapped container UIDs, so set it to mode `755`:
+
+```bash
+sudo mkdir -p /var/lib/ghost-stack
+sudo chmod 755 /var/lib/ghost-stack
+```
+
+<Warning>
+  If `/var/lib/ghost-stack` is mode `700`, container init processes cannot resolve `/sbin/init` or `/bin/busybox` through the user namespace UID mapping and exit immediately with `Permission denied` (exit code 126). See [Container lifecycle](/concepts/container-lifecycle#host-directory-permissions) for details.
+</Warning>
+
+## 5. Deploy the firewall layers
+
+```bash
+sudo bash deploy/deploy.sh
+```
+
+To deploy only the firewall (without the orchestrator state):
+
+```bash
+sudo bash deploy/firewall_deploy.sh
+```
+
+To attach the Layer 3 XDP program to a specific interface manually:
+
+```bash
+sudo ip link set dev eth0 xdpdrv \
+    obj build/bpf/layer3_invisible.bpf.o sec xdp
+```
+
+## 6. Start the systemd services
+
+```bash
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+sudo systemctl enable --now ghost-orchestrator
+sudo systemctl enable --now ghost-agent-beta
+sudo systemctl enable --now "ghost-agent-alpha@eth0"
+```
+
+Verify all three units are healthy:
+
+```bash
+sudo systemctl status ghost-orchestrator ghost-agent-beta "ghost-agent-alpha@eth0"
+```
+
+## 7. Spawn your first department
+
+Bring up a department container at the `MANAGER` tier:
+
+```bash
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+```
+
+Check the hierarchy and audit trail:
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+sudo ./build/ghost-ctl audit-trail
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="ghost-ctl reference" icon="terminal" href="/reference/ghost-ctl">
+    Every CLI command, flag, and example.
+  </Card>
+  <Card title="Firewall layers" icon="layer-group" href="/concepts/firewall-layers">
+    How the four-layer deception stack drops, lies to, and isolates traffic.
+  </Card>
+  <Card title="RBAC configuration" icon="users" href="/configuration/rbac">
+    Map organizational tiers to kernel-enforced UID ranges.
+  </Card>
+  <Card title="Allowlist signing" icon="key" href="/configuration/allowlist">
+    Sign and submit Layer 3 allowlist updates.
+  </Card>
+</CardGroup>

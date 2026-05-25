@@ -1,0 +1,77 @@
+---
+title: "Agents"
+description: "Agent-Alpha and Agent-Beta passively observe kernel events and map behavior to MITRE ATT&CK TTPs in real time."
+---
+
+Ghost-Stack runs two kernel-attached agents. Both are constrained to **read-only** observation by the BPF verifier and the kernel's capability model — neither can write to disk, modify packets, or block syscalls.
+
+## Agent-Alpha — eBPF passive observer
+
+Agent-Alpha loads five BPF probes against kernel tracepoints and kprobes. Each probe emits events through a BPF ring buffer back to userspace for correlation.
+
+| Probe | Kernel event | Detection target |
+|---|---|---|
+| `tp/syscalls/sys_enter_execve` | Process execution | Unexpected binary spawn inside a container |
+| `tp/syscalls/sys_enter_connect` | Outbound TCP / UDP connection | C2 beacon or lateral movement |
+| `kprobe/commit_creds` | Credential change | Privilege escalation attempt |
+| `tp/syscalls/sys_enter_unshare` | Namespace unshare | Container escape attempt |
+| `tp/syscalls/sys_enter_openat` | File open | Sensitive file access pattern |
+
+**Source:** `agents/alpha/alpha.bpf.c`, `agents/alpha/observer.go`
+
+### Design constraints
+
+- Zero write capability — the verifier rejects any helper that mutates kernel state.
+- Never blocks kernel execution — probes are non-sleepable and bounded.
+- All events delivered via BPF ring buffer only — no `bpf_printk`, no map updates beyond the ring.
+
+### When to use it
+
+Agent-Alpha runs one instance per network interface, managed by the `ghost-agent-alpha@.service` systemd template. Enable it on every interface you want process and namespace visibility for:
+
+```bash
+sudo systemctl enable --now "ghost-agent-alpha@eth0"
+sudo systemctl enable --now "ghost-agent-alpha@eth1"
+```
+
+## Agent-Beta — firewall observer and TTP mapper
+
+Agent-Beta runs four goroutines in parallel, each reading from an independent firewall data feed:
+
+```
+goroutine-L1  -->  nflog ring buffer        (netlink socket)
+goroutine-L2  -->  eBPF perf_event_array
+goroutine-L3  -->  XDP drop counter BPF map (polled every 500 ms)
+goroutine-L4  -->  LSM audit netlink socket
+```
+
+**Source:** `agents/beta/beta.go`, `agents/beta/profiler.go`, `agents/beta/ttp_mapper.go`
+
+### Real-time TTP mapping
+
+The TTP mapper consumes the four feeds and matches observed sequences against MITRE ATT&CK identifiers. For example, a `tp/openat` against `/etc/shadow` followed by a `kprobe/commit_creds` event inside the same PID is mapped to `T1068 — Exploitation for Privilege Escalation`.
+
+### Disk policy
+
+All event data lives **in memory only**. Nothing reaches disk unless the orchestrator issues a signed forensic export command. See [`dept snapshot`](/reference/ghost-ctl#dept-snapshot).
+
+### Streaming events
+
+Follow live TTP events as JSON:
+
+```bash
+sudo journalctl -u ghost-agent-beta -f --output=json
+```
+
+## When to use each agent
+
+<CardGroup cols={2}>
+  <Card title="Use Agent-Alpha" icon="microchip">
+    You need process, credential, namespace, and filesystem event visibility inside department containers.
+  </Card>
+  <Card title="Use Agent-Beta" icon="layer-group">
+    You need correlated firewall events and TTP labels across all four layers.
+  </Card>
+</CardGroup>
+
+Both agents should run together in production. Agent-Alpha provides the syscall-level signal Agent-Beta needs to enrich its firewall events with process context.

@@ -1,0 +1,64 @@
+---
+title: "Firewall layers"
+description: "Four kernel-attached layers that hide, mislead, and isolate network traffic without exposing your real services."
+---
+
+The Ghost-Stack firewall is composed of four independent layers. Each layer attaches at a different point in the kernel network and security path. Together they make unauthorized hosts unable to confirm your machine exists, while authorized traffic flows normally.
+
+## Layer 1 — Decoy network (nftables)
+
+A synthetic service landscape deployed via nftables. Port scanners find plausible-looking open ports that route to controlled honeypot handlers. Your real service endpoints are never exposed to the decoy plane.
+
+- **Source:** `firewall/layer1/layer1_decoy.nft`
+- **Hook:** nftables prerouting and input chains
+- **Use when:** you want scanners to spend time and effort enumerating fake services instead of finding the real ones.
+
+## Layer 2 — Deception responder
+
+Attached at the Linux Traffic Control (TC) layer. The TC eBPF program inspects probe traffic and crafts a contextually appropriate fake response — for example a TCP `RST`, an `ICMP unreachable`, or a TLS `HANDSHAKE_FAILURE`. The point is to actively misdirect both automated scanners and human operators.
+
+- **Source:** `firewall/layer2/layer2_tc.bpf.c`, `firewall/layer2/deception_responder.go`
+- **Hook:** TC ingress / egress
+- **Use when:** you want scanners to receive plausible negative results that point them at decoy targets, not silence.
+
+## Layer 3 — Invisible wall
+
+The core stealth primitive. The XDP program is attached in **native** mode, which runs the program inside the NIC driver before the kernel network stack processes any packet. An LPM-trie allowlist controls every pass / drop decision. Sources that miss the allowlist receive `XDP_DROP` with absolute silence — no `RST`, no `ICMP`, no TCP timeout.
+
+- **Source:** `firewall/layer3/layer3_invisible.bpf.c`, `firewall/layer3/allowlist_manager.go`
+- **Hook:** XDP (native driver mode)
+- **Use when:** you need an attacker to have zero signal that the host exists.
+
+Key properties:
+
+- Allowlist updates require an Ed25519-signed command from the orchestrator. See [Allowlist configuration](/configuration/allowlist).
+- Drop counters live in kernel BPF maps and are never written to disk.
+- Agent-Beta polls the counter map every 500 ms via `bpf_map_lookup_elem`.
+
+Attach the program to an interface manually:
+
+```bash
+sudo ip link set dev eth0 xdpdrv \
+    obj build/bpf/layer3_invisible.bpf.o sec xdp
+```
+
+## Layer 4 — Process and namespace isolation
+
+Per-department AppArmor profiles restrict each container to the minimum filesystem and capability set it needs. Per-namespace iptables rules make cross-department traffic impossible at the kernel level.
+
+- **Source:** `firewall/layer4/apparmor-dept-template.profile`, `firewall/layer4/namespace_iptables.sh`
+- **Hook:** Linux Security Module (LSM) + per-namespace netfilter
+- **Use when:** you need defense-in-depth so that even a compromised container cannot reach a peer department.
+
+## Layer interaction example
+
+A scanner probing TCP port 443 from an unauthorized source experiences:
+
+1. **L3 XDP** drops the packet inside the NIC driver. No response ever leaves the host. The scanner sees a TCP timeout indistinguishable from an unreachable host.
+2. If the source becomes allowlisted later and reaches a decoy port, **L1 nftables** routes the connection to a synthetic listener.
+3. If the scanner attempts a TLS handshake against that listener, **L2 TC eBPF** crafts a fake `HANDSHAKE_FAILURE` that points at a misleading server name.
+4. If the scanner pivots inside a department container, **L4 AppArmor** and namespace iptables block it from reaching any other department.
+
+## Observability
+
+Every layer publishes events through Agent-Beta. See [Agents](/concepts/agents) for the event feeds and TTP mapping.

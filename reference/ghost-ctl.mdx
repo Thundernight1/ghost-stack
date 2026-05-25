@@ -1,0 +1,163 @@
+---
+title: "ghost-ctl"
+description: "Complete command reference for the Ghost-Stack orchestrator CLI, including spawn, quarantine, snapshot, and audit operations."
+---
+
+`ghost-ctl` is the orchestrator control plane CLI. It is a transient binary — it exits immediately after the orchestrator acknowledges each command. All state lives in the orchestrator daemon and the append-only audit database.
+
+## Synopsis
+
+```
+ghost-ctl [command] [arguments] [flags]
+```
+
+Run `ghost-ctl help` for the live command list. All state-changing commands require root.
+
+## Commands
+
+### dept spawn
+
+Spawn a new department container with the specified RBAC tier.
+
+```bash
+sudo ./build/ghost-ctl dept spawn <name> <tier>
+```
+
+| Argument | Description |
+|---|---|
+| `<name>` | Department name. Must be unique. Lowercase, hyphen-separated. |
+| `<tier>` | RBAC tier. One of `ROOT`, `DIRECTOR`, `MANAGER`, `STAFF`. Case-sensitive. |
+
+Example:
+
+```bash
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+```
+
+See [Container lifecycle](/concepts/container-lifecycle#spawning-a-department) for what happens under the hood.
+
+### dept quarantine
+
+Isolate a running department. Freezes its cgroup, drops all network inside its namespace, and captures a memory map snapshot.
+
+```bash
+sudo ./build/ghost-ctl dept quarantine <id-or-name>
+```
+
+Example:
+
+```bash
+sudo ./build/ghost-ctl dept quarantine finance-dept
+```
+
+See [Quarantine](/concepts/container-lifecycle#quarantine) for the step-by-step behavior.
+
+### dept snapshot
+
+Capture full memory and state for forensic analysis. The snapshot file lands under `/var/lib/ghost-stack/snapshots/dept-<id>/`.
+
+```bash
+sudo ./build/ghost-ctl dept snapshot <id-or-name>
+```
+
+Example:
+
+```bash
+sudo ./build/ghost-ctl dept snapshot proc-4821
+```
+
+### dept status
+
+Print the status of all running department containers.
+
+```bash
+sudo ./build/ghost-ctl dept status
+```
+
+Output includes department ID, name, tier, host PID, namespace IDs, and cgroup freeze state.
+
+Pass an ID to query a single department:
+
+```bash
+sudo ./build/ghost-ctl dept status 0
+```
+
+### hierarchy show
+
+Render the four-tier RBAC hierarchy tree.
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+```
+
+See [RBAC](/configuration/rbac) for tier semantics.
+
+### audit-trail
+
+Display the append-only immutable audit trail.
+
+```bash
+sudo ./build/ghost-ctl audit-trail
+```
+
+Example output:
+
+```
+[GHOST-CTL] Audit Trail (append-only)
+═══════════════════════════════════
+  [2026-05-25 00:17:34] DEPT_SPAWN dept=0 result=SUCCESS
+  [2026-05-25 00:20:46] DEPT_QUARANTINE dept=0 result=SUCCESS
+═══════════════════════════════════
+```
+
+Rows cannot be modified or deleted without the orchestrator root key.
+
+### version
+
+Print the orchestrator version and build metadata.
+
+```bash
+./build/ghost-ctl version
+```
+
+### help
+
+Print the live command list.
+
+```bash
+./build/ghost-ctl help
+```
+
+## Live log monitoring
+
+Follow all Ghost-Stack service logs together:
+
+```bash
+sudo journalctl \
+    -u ghost-orchestrator \
+    -u ghost-agent-beta \
+    -u "ghost-agent-alpha@eth0" \
+    -f
+```
+
+Stream Agent-Beta TTP events as structured JSON:
+
+```bash
+sudo journalctl -u ghost-agent-beta -f --output=json
+```
+
+Watch only the orchestrator command audit stream:
+
+```bash
+sudo journalctl -u ghost-orchestrator -f
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Command succeeded. |
+| `1` | Generic failure — see stderr. |
+| `2` | Invalid arguments. |
+| `13` | Signature verification failed. |
+| `126` | Permission denied resolving a path inside `/var/lib/ghost-stack`. Fix host directory permissions, see [Container lifecycle](/concepts/container-lifecycle#host-directory-permissions). |

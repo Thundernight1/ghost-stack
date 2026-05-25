@@ -1,0 +1,114 @@
+---
+title: "Container lifecycle"
+description: "How department containers are spawned, recovered after CLI restart, quarantined, and snapshotted."
+---
+
+Each department in Ghost-Stack runs inside its own user, network, and mount namespace triplet. The orchestrator manages the full lifecycle through `ghost-ctl` and persists state in `/var/lib/ghost-stack/orchestrator.db`.
+
+## Spawning a department
+
+```bash
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+```
+
+The orchestrator:
+
+1. Allocates a UID range and a `/24` subnet via the IPAM.
+2. Creates user, network, and mount namespaces.
+3. Mounts the rootfs template from `/var/lib/ghost-stack/templates/rootfs`.
+4. Applies the AppArmor profile from the per-department template.
+5. Launches `/sbin/init` inside the namespace triplet.
+6. Writes a `DEPT_SPAWN` row to the append-only audit table.
+
+The new container's PID is returned to the caller and recorded in the orchestrator database.
+
+## Host directory permissions
+
+The host state directory `/var/lib/ghost-stack` must be mode `755` so mapped container UIDs can traverse it:
+
+```bash
+sudo chmod 755 /var/lib/ghost-stack
+```
+
+<Warning>
+  Inside a container's user namespace, the container root is mapped to host UID `100000`. UID `100000` cannot traverse a directory with mode `700`. If you leave `/var/lib/ghost-stack` at `700`, the container's `/sbin/init` and `/bin/busybox` fail to execute with exit code `126 — Permission denied`, and the container exits instantly.
+</Warning>
+
+## Container daemonization
+
+The orchestrator deliberately does **not** set `Pdeathsig: syscall.SIGKILL` on the spawned process. `ghost-ctl` is a transient CLI: it exits immediately after the spawn returns. If the container inherited a parent-death signal, the kernel would kill it as soon as `ghost-ctl` exits, leaving a defunct `Z` (zombie) entry.
+
+Instead, the container init is orphaned to PID 1 on the host, which reaps it normally. The namespace triplet stays alive across CLI invocations.
+
+## State recovery after orchestrator restart
+
+When the orchestrator process restarts, it reads every active container row from `orchestrator.db` and rebuilds its in-memory state through `RegisterRecoveredContainer`. This restores the department manager's in-memory map so subsequent `dept status`, `dept quarantine`, and `dept snapshot` commands resolve correctly.
+
+Without this step, recovered departments exist in the database but appear as `department <id> not running` to the CLI. Recovery happens automatically on every `ghost-orchestrator` start — you do not need to invoke anything manually.
+
+To verify recovery worked, list running departments after a restart:
+
+```bash
+sudo systemctl restart ghost-orchestrator
+sudo ./build/ghost-ctl dept status
+```
+
+Every department that was active before the restart should appear in the output with its original ID, tier, and PID.
+
+## Quarantine
+
+```bash
+sudo ./build/ghost-ctl dept quarantine 0
+```
+
+Quarantine runs four steps in order:
+
+1. **Freeze the cgroup.** Writes `1` to `cgroup.freeze`, suspending every process in the department in the kernel scheduler.
+2. **Drop all network.** Installs a `policy drop` nftables ruleset inside the department's network namespace for input, output, and forward.
+3. **Capture a memory map snapshot.** Reads `/proc/<pid>/maps` into `/var/lib/ghost-stack/snapshots/dept-<id>/mem-maps-<timestamp>.txt`.
+4. **Escalate.** Emits an alert on the orchestrator command bus.
+
+Verify the frozen state:
+
+```bash
+cat /sys/fs/cgroup/ghost-stack/dept-0/cgroup.freeze
+# 1
+
+cat /sys/fs/cgroup/ghost-stack/dept-0/cgroup.events
+# populated 1
+# frozen 1
+```
+
+Verify the network drop policy inside the namespace:
+
+```bash
+sudo nsenter -t <pid> -n nft list ruleset
+```
+
+## Snapshot
+
+```bash
+sudo ./build/ghost-ctl dept snapshot proc-4821
+```
+
+`dept snapshot` captures the container's full memory and process state for forensic analysis. The snapshot file is written under `/var/lib/ghost-stack/snapshots/dept-<id>/` and recorded in the audit trail. Snapshots are the only path by which Agent-Beta TTP data reaches disk.
+
+## Auditing
+
+Every lifecycle action writes a row to the append-only audit trail. Inspect it with:
+
+```bash
+sudo ./build/ghost-ctl audit-trail
+```
+
+Example:
+
+```
+[GHOST-CTL] Audit Trail (append-only)
+═══════════════════════════════════
+  [2026-05-25 00:17:34] DEPT_SPAWN dept=0 result=SUCCESS
+  [2026-05-25 00:20:46] DEPT_QUARANTINE dept=0 result=SUCCESS
+═══════════════════════════════════
+```
+
+The underlying SQLite WAL journal is append-only — entries cannot be modified or deleted without the orchestrator root key.

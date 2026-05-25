@@ -1,0 +1,56 @@
+---
+title: "Ghost-Stack Core"
+description: "Kernel-level deception security orchestrator that makes your network invisible to unauthorized scanners."
+---
+
+Ghost-Stack Core is a Linux kernel-level security orchestration platform. It deploys cryptographically isolated department containers behind a four-layer eBPF deception firewall, so unauthorized scanners cannot determine that your host exists.
+
+All enforcement runs inside the kernel. There is no userspace daemon you can tamper with, disable, or bypass.
+
+## Why Ghost-Stack
+
+Traditional firewalls answer probes. They send `RST`, `ICMP unreachable`, or a TCP timeout — every response is signal that confirms your host is real. Ghost-Stack inverts that model: unauthorized packets are dropped silently at the NIC driver via XDP, before the kernel network stack ever sees them.
+
+## Core capabilities
+
+<CardGroup cols={2}>
+  <Card title="Invisible wall" icon="ghost" href="/concepts/firewall-layers#layer-3-invisible-wall">
+    XDP NIC-level drop with no RST, ICMP, or timeout signal.
+  </Card>
+  <Card title="Deception responder" icon="mask" href="/concepts/firewall-layers#layer-2-deception-responder">
+    TC eBPF crafts fake TLS handshake failures and RST packets to misdirect scanners.
+  </Card>
+  <Card title="Passive eBPF observation" icon="eye" href="/concepts/agents#agent-alpha">
+    Five kernel tracepoints monitored with zero write capability.
+  </Card>
+  <Card title="Kernel RBAC" icon="lock" href="/configuration/rbac">
+    Four-tier hierarchy enforced via user namespace UID mapping.
+  </Card>
+  <Card title="Ed25519 command bus" icon="key" href="/configuration/allowlist">
+    Every state change requires a cryptographic signature.
+  </Card>
+  <Card title="Immutable audit trail" icon="scroll" href="/reference/ghost-ctl#audit-trail">
+    Append-only SQLite WAL partition you cannot rewrite.
+  </Card>
+</CardGroup>
+
+## Where to start
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install dependencies, build `ghost-ctl`, and bring up the firewall stack.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    See how the control plane, agents, and firewall layers fit together.
+  </Card>
+  <Card title="ghost-ctl reference" icon="terminal" href="/reference/ghost-ctl">
+    Full command reference for the orchestrator CLI.
+  </Card>
+  <Card title="Security model" icon="shield" href="/concepts/security-model">
+    Threat boundaries, key primitives, and what Ghost-Stack does not do.
+  </Card>
+</CardGroup>
+
+<Note>
+  Access to Ghost-Stack Core is governed by a signed NDA and a Commercial Evaluation Agreement. This documentation describes the system for authorized parties only.
+</Note>

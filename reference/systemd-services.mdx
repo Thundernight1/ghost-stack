@@ -1,0 +1,68 @@
+---
+title: "Systemd services"
+description: "The three systemd units that run the Ghost-Stack orchestrator and observation agents."
+---
+
+Ghost-Stack ships three systemd unit files. They live in `systemd/` and should be copied to `/etc/systemd/system/` during installation.
+
+## Units
+
+| Service | Description | Type |
+|---|---|---|
+| `ghost-orchestrator.service` | Control plane orchestrator daemon | `notify` |
+| `ghost-agent-beta.service` | Four-layer firewall observer and TTP mapper | `simple` |
+| `ghost-agent-alpha@.service` | Per-interface eBPF probe agent (templated) | `simple` |
+
+`ghost-agent-alpha@.service` is a template. Instantiate it once per interface using the interface name as the template argument, for example `ghost-agent-alpha@eth0.service`.
+
+## Install
+
+```bash
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+## Enable and start
+
+```bash
+sudo systemctl enable --now ghost-orchestrator
+sudo systemctl enable --now ghost-agent-beta
+sudo systemctl enable --now "ghost-agent-alpha@eth0"
+```
+
+Enable additional Alpha instances for each interface you want monitored:
+
+```bash
+sudo systemctl enable --now "ghost-agent-alpha@eth1"
+sudo systemctl enable --now "ghost-agent-alpha@wg0"
+```
+
+## Health check
+
+```bash
+sudo systemctl status \
+    ghost-orchestrator \
+    ghost-agent-beta \
+    "ghost-agent-alpha@eth0"
+```
+
+A healthy orchestrator reports `Active: active (running)` and `Status: "ready"`. The orchestrator uses `Type=notify`, so systemd only marks it active after the BPF programs are loaded, the SQLite WAL is opened, and recovered containers are re-registered. See [Container lifecycle — state recovery](/concepts/container-lifecycle#state-recovery-after-orchestrator-restart).
+
+## Restart after a configuration change
+
+```bash
+sudo systemctl restart ghost-orchestrator
+```
+
+Restarting the orchestrator does **not** disturb running department containers — their namespace triplets are owned by host PID 1. The orchestrator re-registers them in memory on startup so subsequent `dept status`, `dept quarantine`, and `dept snapshot` commands resolve correctly.
+
+## Disable
+
+```bash
+sudo systemctl disable --now \
+    ghost-orchestrator \
+    ghost-agent-beta \
+    "ghost-agent-alpha@eth0"
+```
+
+Disabling the units does not tear down department containers. To stop a department, use `ghost-ctl dept quarantine` followed by a manual teardown.

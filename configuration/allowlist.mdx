@@ -1,0 +1,82 @@
+---
+title: "Layer 3 allowlist"
+description: "Sign and submit Ed25519-signed CIDR entries to the XDP invisible wall allowlist."
+---
+
+The Layer 3 invisible wall drops every packet whose source IP is not in its LPM-trie allowlist. Updates to the allowlist must be Ed25519-signed by the orchestrator key — the kernel program rejects unsigned commands.
+
+## Submitting an entry via ghost-ctl
+
+The simplest path is `ghost-ctl`, which signs the payload with the orchestrator key file:
+
+```bash
+sudo ./build/ghost-ctl allowlist add \
+    --cidr 10.0.10.0/24 \
+    --key /etc/ghost-stack/orchestrator.ed25519.priv
+```
+
+The command:
+
+1. Builds the canonical JSON payload below.
+2. Signs the payload with the Ed25519 private key at `--key`.
+3. Sends the signed command to the orchestrator over its UNIX socket.
+4. The orchestrator validates the signature, writes a row to the audit trail, and updates the kernel BPF map.
+
+## Signed payload format
+
+The orchestrator accepts payloads in this canonical JSON form:
+
+```json
+{
+  "op": "allowlist_add",
+  "cidr": "10.0.10.0/24",
+  "comment": "SOC team VPN range",
+  "issued_at": "2026-01-15T09:00:00Z",
+  "signature": "<ed25519_base64>"
+}
+```
+
+Field reference:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `op` | string | Must be `allowlist_add` or `allowlist_remove`. |
+| `cidr` | string | IPv4 or IPv6 CIDR. Single hosts use `/32` or `/128`. |
+| `comment` | string | Free-form. Stored in the audit trail. |
+| `issued_at` | RFC 3339 timestamp | Rejected if older than five minutes (replay protection). |
+| `signature` | base64 string | Ed25519 signature over the canonical JSON minus the `signature` field. |
+
+## Listing current entries
+
+```bash
+sudo ./build/ghost-ctl allowlist list
+```
+
+The output prints the BPF map contents — these are the entries the kernel is actively enforcing, not a userspace cache.
+
+## Removing an entry
+
+```bash
+sudo ./build/ghost-ctl allowlist remove \
+    --cidr 10.0.10.0/24 \
+    --key /etc/ghost-stack/orchestrator.ed25519.priv
+```
+
+`allowlist remove` follows the same signing rules as `allowlist add`. The audit trail records both adds and removes with the original signer key fingerprint.
+
+## When to update the allowlist
+
+<CardGroup cols={2}>
+  <Card title="Add" icon="circle-plus">
+    SOC VPN ranges, monitoring scanners, partner integrations — anything that must be allowed to reach real services.
+  </Card>
+  <Card title="Remove" icon="circle-minus">
+    Decommissioned ranges, rotated VPN pools, ranges flagged by Agent-Beta as compromised.
+  </Card>
+</CardGroup>
+
+## Operational notes
+
+- Updates land in a kernel BPF map and take effect on the **next packet**. There is no kernel reload.
+- The drop counter for each `XDP_DROP` decision lives in a separate BPF map. Agent-Beta polls it every 500 ms. See [Agents](/concepts/agents).
+- Allowlist state survives `ghost-orchestrator` restarts because the orchestrator restores entries from the audit trail on startup.

@@ -1,0 +1,90 @@
+---
+title: "Architecture"
+description: "How the control plane, agents, firewall layers, and department containers fit together inside the Linux kernel."
+---
+
+Ghost-Stack Core is built from three planes that communicate through an Ed25519-signed command bus. The orchestrator runs in userspace; every enforcement primitive runs inside the kernel.
+
+## System diagram
+
+```
++------------------------------------------------------------------+
+|                    ghost-ctl  (Control Plane)                    |
+|   dept spawn | dept quarantine | dept snapshot | hierarchy show  |
+|                   Ed25519-signed command bus                     |
++-----------------------------+------------------------------------+
+                              |
+            +-----------------v------------------+
+            |        AGENT-BETA  (Observer)      |
+            |  L1 nflog  |  L2 perf_event  | L3 XDP  |
+            |  L4 LSM audit  |  TTP mapper       |
+            +-------+-------------------+--------+
+                    |                   |
+    +---------------v-----+   +---------v------------------+
+    |    AGENT-ALPHA      |   |   4-Layer eBPF Firewall    |
+    |    eBPF kprobes     |   |   L1  nftables decoy       |
+    |    tp/execve        |   |   L2  TC deception BPF     |
+    |    tp/connect       |   |   L3  XDP invisible wall   |
+    |    kprobe/creds     |   |   L4  AppArmor + ns ipt    |
+    |    tp/unshare       |   +----------------------------+
+    |    tp/openat        |
+    +----------+----------+
+               |
+    +----------v-----------------------------------------+
+    |              Department Containers                 |
+    |   [ DEPT-A ]   [ DEPT-B ]   [ DEPT-C ]   ...       |
+    |   user ns  /  net ns  /  mount ns                  |
+    |   UID-mapped RBAC  (kernel enforced)               |
+    +----------------------------------------------------+
+```
+
+## Planes
+
+### Control plane — ghost-ctl
+
+`ghost-ctl` is a transient CLI that issues Ed25519-signed commands to the orchestrator. It manages department lifecycle, hierarchy queries, allowlist updates, and forensic snapshots. See the [CLI reference](/reference/ghost-ctl).
+
+### Observation plane — Agent-Alpha and Agent-Beta
+
+Two kernel-attached agents collect events with zero write capability:
+
+- **Agent-Alpha** loads BPF tracepoints and kprobes for process, network, and namespace events.
+- **Agent-Beta** consumes the four firewall layers' event feeds and maps observed sequences to MITRE ATT&CK TTPs in real time.
+
+See [Agents](/concepts/agents).
+
+### Enforcement plane — four-layer firewall
+
+Each layer runs at a different point in the kernel's network and security path:
+
+| Layer | Hook | Role |
+|---|---|---|
+| L1 | nftables | Decoy service landscape |
+| L2 | TC eBPF | Crafted fake responses |
+| L3 | XDP (NIC driver) | Silent drop / allowlist |
+| L4 | AppArmor + namespace iptables | Per-department isolation |
+
+See [Firewall layers](/concepts/firewall-layers).
+
+### Data plane — department containers
+
+Each organizational unit runs in its own user, network, and mount namespace triplet. UIDs are mapped through the kernel allocator so cross-department privilege escalation is blocked at the scheduler level.
+
+See [Container lifecycle](/concepts/container-lifecycle) and [RBAC](/configuration/rbac).
+
+## How a command flows
+
+1. An operator runs `ghost-ctl dept spawn engineering MANAGER`.
+2. `ghost-ctl` signs the command with the orchestrator's Ed25519 private key.
+3. The orchestrator validates the signature and writes the intent to the append-only SQLite WAL audit table.
+4. The orchestrator creates the user, network, and mount namespaces, applies the AppArmor profile, allocates a subnet via the IPAM, and launches the container's init process.
+5. Agent-Beta picks up the new namespace via its LSM audit feed and begins TTP correlation.
+
+## How an attacker probe is dropped
+
+1. An unauthorized packet arrives at the NIC.
+2. The XDP program at Layer 3 looks up the source IP in the allowlist LPM-trie.
+3. If the source is not allowlisted, the program returns `XDP_DROP` — no response is generated.
+4. The drop counter increments inside a BPF map. Agent-Beta polls the map every 500 ms and forwards the event to the TTP mapper, which never writes to disk.
+
+Because the drop happens before the kernel network stack runs, the host cannot leak any signal that confirms its existence.

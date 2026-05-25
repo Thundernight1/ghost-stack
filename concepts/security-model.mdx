@@ -1,0 +1,78 @@
+---
+title: "Security model"
+description: "Threat boundaries, key cryptographic primitives, and the attack surfaces Ghost-Stack explicitly does and does not cover."
+---
+
+Ghost-Stack Core is designed against a specific adversary model. Understand what it does and does not protect before you deploy it.
+
+## Threat model
+
+Ghost-Stack is designed to defend against:
+
+1. **Network-level attacker** — full packet control on the wire; running Nmap, Masscan, Shodan-style probes.
+2. **Compromised container** — attacker has arbitrary code execution inside a department container.
+3. **Insider threat** — malicious actor with valid credentials attempting privilege escalation.
+4. **Forensic evasion** — attacker attempting to delete or tamper with audit evidence.
+
+## What Ghost-Stack does not do
+
+- Does **not** provide DDoS mitigation or rate limiting.
+- Does **not** replace a WAF for application-layer (L7) attacks.
+- Does **not** inspect encrypted payload content — TLS termination is out of scope.
+- Does **not** support Windows or macOS as deployment targets.
+
+If you need those capabilities, layer them in front of or alongside Ghost-Stack.
+
+## Key security primitives
+
+| Primitive | What it guarantees |
+|---|---|
+| **Ed25519 signatures** | Every state-change command requires cryptographic proof of origin. Unsigned commands are rejected before reaching the orchestrator state machine. |
+| **BPF CO-RE** | eBPF programs are verified at load time. The kernel rejects any program that violates the safety contract. |
+| **User namespace UID mapping** | Cross-department privilege escalation is blocked at the kernel scheduler level via UID range allocation. |
+| **Append-only WAL** | The SQLite WAL journal prevents in-place audit-log modification. |
+| **Zero-write eBPF** | Agent-Alpha and Agent-Beta hold only `BPF_PROG_TYPE_TRACEPOINT` capabilities — they cannot mutate kernel state. |
+
+## Trust boundaries
+
+```
++----------------------------+
+|   Operator                 |   Holds Ed25519 private key
++-------------+--------------+
+              | signed command
++-------------v--------------+
+|   ghost-ctl (transient)    |   No persistent state
++-------------+--------------+
+              | UNIX socket, signature verified
++-------------v--------------+
+|   ghost-orchestrator       |   Trusted root, holds audit DB key
++-------------+--------------+
+              | namespace + cgroup syscalls
++-------------v--------------+
+|   Department container     |   Untrusted; AppArmor-confined
++----------------------------+
+```
+
+A compromised department container cannot:
+
+- Write to any other department's namespace.
+- Read the orchestrator database or audit trail.
+- Modify the XDP allowlist (the BPF map is owned by the orchestrator).
+- Disable Agent-Alpha or Agent-Beta (they run outside the container's namespace triplet).
+
+## Key handling
+
+The orchestrator Ed25519 private key lives at `/etc/ghost-stack/orchestrator.ed25519.priv`. Protect it like a CA root key:
+
+- Mode `0400`, owner `root`.
+- Never check it into source control.
+- Rotate it on operator handover; the public key is embedded in the orchestrator binary at build time for legacy command verification, but rotation invalidates pending signed commands.
+
+## Audit invariants
+
+The append-only audit table preserves two invariants:
+
+1. **No deletion.** SQLite WAL mode plus a constraint trigger rejects `DELETE` and `UPDATE` on the audit table.
+2. **No reordering.** Every row carries a monotonic `seq` column derived from the WAL frame number.
+
+If an attacker corrupts the WAL file directly, the orchestrator detects the discrepancy on next startup via a chained Ed25519 signature over each row and refuses to serve commands until an operator runs the recovery procedure.
