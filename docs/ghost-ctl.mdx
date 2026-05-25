@@ -1,0 +1,101 @@
+---
+title: "ghost-ctl CLI"
+description: "Command-line reference for ghost-ctl: spawn departments, quarantine threats, capture snapshots, and read the audit trail."
+---
+
+`ghost-ctl` is the control-plane CLI for Ghost-Stack Core. Every state change it issues is Ed25519-signed before it reaches the orchestrator, so unsigned invocations are rejected by the kernel-side enforcement layer.
+
+Run `ghost-ctl help` at any time to see the full command list.
+
+## Commands
+
+### `dept spawn`
+
+Spawn a department container at a given hierarchy tier.
+
+```bash
+sudo ghost-ctl dept spawn <ID> <NAME> <TIER> [PARENT_ID]
+```
+
+- `ID` — unique integer department ID.
+- `NAME` — human-readable label.
+- `TIER` — one of `ROOT`, `DIRECTOR`, `MANAGER`, `STAFF`.
+- `PARENT_ID` — required for any tier except `ROOT`.
+
+Example — build a four-tier chain:
+
+```bash
+sudo ghost-ctl dept spawn 0   "Headquarters" ROOT
+sudo ghost-ctl dept spawn 1   "Engineering"  DIRECTOR 0
+sudo ghost-ctl dept spawn 10  "Backend Team" MANAGER  1
+sudo ghost-ctl dept spawn 100 "dev-alice"    STAFF    10
+```
+
+### `dept quarantine`
+
+Freeze a running department and drop all of its network traffic. Use this as a first response to a compromised tenant.
+
+```bash
+sudo ghost-ctl dept quarantine <ID>
+```
+
+Quarantine performs four steps in order: freeze the cgroup, install a drop-all nftables ruleset in the department's net namespace, capture a `/proc/[pid]/mem` snapshot, and emit an alert on the orchestrator bus.
+
+### `dept snapshot`
+
+Capture department state (memory maps and metadata) without freezing the workload. Useful for forensics on a still-running department.
+
+```bash
+sudo ghost-ctl dept snapshot <ID>
+```
+
+Snapshots land under `/var/lib/ghost-stack/snapshots/dept-<ID>/`.
+
+### `dept status`
+
+Print the status of a single department, including PID, tier, parent, and quarantine state.
+
+```bash
+sudo ghost-ctl dept status <ID>
+```
+
+### `hierarchy show`
+
+Render the full department tree.
+
+```bash
+sudo ghost-ctl hierarchy show
+```
+
+### `audit-trail`
+
+Print the append-only audit log. The log file is the same data the [dashboard](/docs/dashboard) streams into its Live Audit Trail panel.
+
+```bash
+sudo ghost-ctl audit-trail
+```
+
+### `version`
+
+Print the build version.
+
+```bash
+ghost-ctl version
+```
+
+## Tiers
+
+| Tier | Role | Can parent |
+|---|---|---|
+| `ROOT` | Top of the org. Exactly one per deployment. | `DIRECTOR` |
+| `DIRECTOR` | Division-level. | `MANAGER` |
+| `MANAGER` | Team-level. | `STAFF` |
+| `STAFF` | Individual workload. | None |
+
+Tier rules are enforced at spawn time and via user-namespace UID mapping at runtime.
+
+## Exit codes
+
+- `0` — command succeeded.
+- `1` — invalid arguments or usage error.
+- Non-zero with a `[GHOST-CTL]` error line — the orchestrator rejected the command (most often a signature failure or hierarchy violation).

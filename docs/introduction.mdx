@@ -1,0 +1,28 @@
+---
+title: "Introduction"
+description: "Ghost-Stack Core is a kernel-level deception security orchestrator built on eBPF, XDP, and Linux namespaces."
+---
+
+Ghost-Stack Core hides your network from unauthorized observers and enforces isolation in-kernel. Where a traditional firewall responds to scans with a refusal, Ghost-Stack drops packets silently at the NIC driver and crafts decoy responses that mislead attackers about your topology.
+
+## What you get
+
+- **4-layer deception firewall** — nftables, TC eBPF, XDP, and AppArmor working together so port scans return nothing useful.
+- **Department isolation** — each organizational unit runs in its own user, network, and mount namespace triplet.
+- **Tamper-proof observation** — Agent-Alpha reads kernel tracepoints with zero write capability.
+- **Signed control plane** — every state change is gated by an Ed25519 signature.
+- **Immutable audit trail** — append-only logs that survive process restarts.
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/docs/quickstart">
+    Install Ghost-Stack and spawn your first department.
+  </Card>
+  <Card title="Security dashboard" icon="gauge" href="/docs/dashboard">
+    Open the visual control plane and watch the firewall in real time.
+  </Card>
+  <Card title="ghost-ctl CLI" icon="terminal" href="/docs/ghost-ctl">
+    Drive every orchestrator action from the command line.
+  </Card>
+</CardGroup>

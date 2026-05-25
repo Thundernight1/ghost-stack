@@ -1,0 +1,36 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Ghost-Stack Core",
+  "colors": {
+    "primary": "#00f0ff",
+    "light": "#00f0ff",
+    "dark": "#070a13"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "docs/introduction",
+              "docs/quickstart"
+            ]
+          },
+          {
+            "group": "Operate",
+            "pages": [
+              "docs/dashboard",
+              "docs/ghost-ctl"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {}
+  }
+}

@@ -1,0 +1,91 @@
+---
+title: "Security dashboard"
+description: "Open the Ghost-Stack visual control plane to monitor firewall layers, MITRE ATT&CK correlation, and department hierarchy in real time."
+---
+
+The security dashboard is a single-page control plane viewer for Ghost-Stack Core. It surfaces firewall counters, attack-technique correlation, the live audit trail, and department status in one screen so on-call operators can read system health at a glance.
+
+Use the dashboard when you want a visual companion to [`ghost-ctl`](/docs/ghost-ctl) — for example during incident response, demos, or routine health checks.
+
+## Open the dashboard
+
+The dashboard ships as a self-contained HTML file with no build step. Open it directly:
+
+```bash
+xdg-open demo/dashboard/index.html
+```
+
+Or serve it on a workstation when the orchestrator runs on a remote host:
+
+```bash
+cd demo/dashboard
+python3 -m http.server 8080
+```
+
+Then browse to `http://localhost:8080`.
+
+<Note>
+  The dashboard reads live counters and audit entries exported by the orchestrator. Run the orchestrator (`ghost-orchestrator.service`) on the same host or point the dashboard at the exported metrics endpoint before opening it.
+</Note>
+
+## Panels
+
+### 4-layer deception firewall
+
+Shows live packet counters for each of the four enforcement layers:
+
+| Layer | Engine | What it counts |
+|---|---|---|
+| Layer 1 | nftables | Decoy responses crafted in userspace. |
+| Layer 2 | TC eBPF | Contextual fake RST and TLS-error packets. |
+| Layer 3 | XDP | NIC-driver-level drops with no reply. |
+| Layer 4 | AppArmor | LSM denials from department profiles. |
+
+Use this panel to confirm traffic is being absorbed at the lowest possible layer. A healthy posture has Layer 3 dominating the totals.
+
+### MITRE ATT&CK TTP correlation
+
+Maps observed events to ATT&CK techniques (T1046, T1110, T1190, T1068, T1210, T1071). Cards light up when Agent-Beta's TTP mapper attributes a fresh event to that technique. Use this panel to communicate threat context to non-kernel audiences.
+
+### Live audit trail & orchestration bus
+
+Streams the append-only audit log: department spawns, quarantines, snapshots, and signed command receipts. Entries match what `ghost-ctl audit-trail` prints.
+
+### Invisibility meter
+
+Displays the percentage of the enterprise attack surface that is invisible to external scans. Driven by the ratio of XDP-dropped probes to total inbound packets.
+
+### Hierarchy boundaries
+
+Renders the department tree (ROOT → DIRECTOR → MANAGER → STAFF), with active departments highlighted. Hover any node to see its PID and tier.
+
+### Threat actor profiles
+
+Summarizes profiled adversaries from Agent-Beta — scanner fingerprints, brute-force sources, and exploitation attempts.
+
+### XDP drop rate (pkts/sec)
+
+Time-series chart of packets dropped by Layer 3. Spikes here indicate active reconnaissance.
+
+## Configure refresh rate and data source
+
+The dashboard reads from a small JSON endpoint exported by the orchestrator. Override the defaults near the top of `demo/dashboard/index.html`:
+
+```js
+const CONFIG = {
+  // Orchestrator metrics endpoint. Defaults to same-origin.
+  metricsUrl: "/api/metrics",
+  // Audit-trail tail endpoint.
+  auditUrl:   "/api/audit/tail",
+  // Refresh interval in milliseconds.
+  refreshMs:  2000,
+};
+```
+
+Restart the page after editing. If the orchestrator is on another host, point `metricsUrl` and `auditUrl` at its address and make sure CORS is allowed for the dashboard origin.
+
+## Troubleshooting
+
+- **All counters stay at zero.** The dashboard cannot reach the metrics endpoint. Verify the orchestrator is running and that `metricsUrl` resolves from your browser.
+- **MITRE cards never light up.** Agent-Beta is not exporting TTPs. Check that `ghost-agent-beta.service` is active and that the TTP mapper has training data.
+- **Audit feed is empty but `ghost-ctl audit-trail` has entries.** The audit endpoint path is wrong or the orchestrator user cannot read the audit log file. Match the path used by your deployment.

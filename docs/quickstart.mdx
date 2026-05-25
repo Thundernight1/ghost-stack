@@ -1,0 +1,59 @@
+---
+title: "Quickstart"
+description: "Build Ghost-Stack Core, spawn a department container, and verify isolation in under ten minutes."
+---
+
+This page walks you through a minimal end-to-end run: build the binaries, spawn a department, and confirm the namespace boundaries are live.
+
+## Prerequisites
+
+- Linux kernel 6.1 or later with eBPF, XDP, and cgroups v2 enabled.
+- Go 1.22 or later.
+- `clang`, `llvm`, and `libbpf` headers for the eBPF programs.
+- Root privileges on the target host (the orchestrator manages kernel objects).
+
+## 1. Build the binaries
+
+From the repository root:
+
+```bash
+make build
+```
+
+This produces `build/ghost-ctl` and the agent binaries used by the systemd services.
+
+## 2. Spawn your first department
+
+Departments are the unit of isolation. Each one runs in a user, network, and mount namespace triplet, governed by a tier in the hierarchy.
+
+```bash
+sudo ./build/ghost-ctl dept spawn 0 "Headquarters" ROOT
+```
+
+You should see a `DEPT_SPAWN` confirmation. Inspect the running tree:
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+```
+
+## 3. Verify isolation
+
+Resolve the container PID from `hierarchy show`, then enter the namespace to confirm the host cannot see inside:
+
+```bash
+sudo nsenter -t <PID> -u hostname
+# → ghost-dept-0
+
+sudo nsenter -t <PID> -n ip addr show
+# → isolated veth on 10.200.x.x
+```
+
+## 4. Watch live activity
+
+Open `demo/dashboard/index.html` in a browser to view the firewall counters, MITRE ATT&CK correlations, and live audit feed. See [Security dashboard](/docs/dashboard) for a tour of each panel.
+
+## Next steps
+
+- Add child departments with `ghost-ctl dept spawn <ID> <NAME> <TIER> <PARENT_ID>`.
+- Practice incident response with `ghost-ctl dept quarantine <ID>`.
+- Review the full command surface in the [ghost-ctl reference](/docs/ghost-ctl).
