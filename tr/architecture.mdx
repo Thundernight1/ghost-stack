@@ -1,0 +1,90 @@
+---
+title: "Mimari"
+description: "ghost-ctl kontrol düzlemi, eBPF gözlem ajanları, dört katmanlı güvenlik duvarı ve yalıtılmış departman konteynerlerinin Linux çekirdeği içinde nasıl bir araya geldiği."
+---
+
+Ghost-Stack Core, Ed25519 ile imzalanmış bir komut yolu üzerinden iletişim kuran üç düzlemden oluşur. Orkestratör kullanıcı alanında çalışır; her uygulama ilkesi çekirdeğin içinde çalışır.
+
+## Sistem diyagramı
+
+```
++------------------------------------------------------------------+
+|                    ghost-ctl  (Control Plane)                    |
+|   dept spawn | dept quarantine | dept snapshot | hierarchy show  |
+|                   Ed25519-signed command bus                     |
++-----------------------------+------------------------------------+
+                              |
+            +-----------------v------------------+
+            |        AGENT-BETA  (Observer)      |
+            |  L1 nflog  |  L2 perf_event  | L3 XDP  |
+            |  L4 LSM audit  |  TTP mapper       |
+            +-------+-------------------+--------+
+                    |                   |
+    +---------------v-----+   +---------v------------------+
+    |    AGENT-ALPHA      |   |   4-Layer eBPF Firewall    |
+    |    eBPF kprobes     |   |   L1  nftables decoy       |
+    |    tp/execve        |   |   L2  TC deception BPF     |
+    |    tp/connect       |   |   L3  XDP invisible wall   |
+    |    kprobe/creds     |   |   L4  AppArmor + ns ipt    |
+    |    tp/unshare       |   +----------------------------+
+    |    tp/openat        |
+    +----------+----------+
+               |
+    +----------v-----------------------------------------+
+    |              Department Containers                 |
+    |   [ DEPT-A ]   [ DEPT-B ]   [ DEPT-C ]   ...       |
+    |   user ns  /  net ns  /  mount ns                  |
+    |   UID-mapped RBAC  (kernel enforced)               |
+    +----------------------------------------------------+
+```
+
+## Düzlemler
+
+### Kontrol düzlemi — ghost-ctl
+
+`ghost-ctl`, orkestratöre Ed25519 ile imzalanmış komutlar gönderen geçici bir CLI'dır. Departman yaşam döngüsünü, hiyerarşi sorgularını, izin listesi güncellemelerini ve adli anlık görüntüleri yönetir. Bakınız [CLI referansı](/reference/ghost-ctl).
+
+### Gözlem düzlemi — Agent-Alpha ve Agent-Beta
+
+Olayları sıfır yazma yetkisiyle toplayan iki çekirdek bağlı ajan vardır:
+
+- **Agent-Alpha**, süreç, ağ ve namespace olayları için BPF izleme noktaları ve kprobe'lar yükler.
+- **Agent-Beta**, dört güvenlik duvarı katmanının olay akışlarını tüketir ve gözlemlenen dizileri gerçek zamanlı olarak MITRE ATT&CK TTP'lerine eşler.
+
+Bakınız [Ajanlar](/concepts/agents).
+
+### Uygulama düzlemi — dört katmanlı güvenlik duvarı
+
+Her katman çekirdeğin ağ ve güvenlik yolunun farklı bir noktasında çalışır:
+
+| Katman | Bağlantı noktası | Görev |
+|---|---|---|
+| L1 | nftables | Sahte servis manzarası |
+| L2 | TC eBPF | Üretilen sahte yanıtlar |
+| L3 | XDP (NIC sürücüsü) | Sessiz düşürme / izin listesi |
+| L4 | AppArmor + namespace iptables | Departman başına yalıtım |
+
+Bakınız [Güvenlik duvarı katmanları](/concepts/firewall-layers).
+
+### Veri düzlemi — departman konteynerleri
+
+Her organizasyonel birim kendi kullanıcı, ağ ve mount namespace üçlüsünde çalışır. UID'ler çekirdek tahsisçisi üzerinden eşlenir; bu sayede departmanlar arası yetki yükseltme zamanlayıcı seviyesinde engellenir.
+
+Bakınız [Konteyner yaşam döngüsü](/concepts/container-lifecycle) ve [RBAC](/configuration/rbac).
+
+## Bir komut nasıl akar
+
+1. Bir operatör `ghost-ctl dept spawn engineering MANAGER` komutunu çalıştırır.
+2. `ghost-ctl`, komutu orkestratörün Ed25519 özel anahtarıyla imzalar.
+3. Orkestratör imzayı doğrular ve niyeti yalnızca ekleme yapılabilen SQLite WAL denetim tablosuna yazar.
+4. Orkestratör; kullanıcı, ağ ve mount namespace'lerini oluşturur, AppArmor profilini uygular, IPAM üzerinden bir alt ağ tahsis eder ve konteynerin init sürecini başlatır.
+5. Agent-Beta, yeni namespace'i LSM denetim akışı üzerinden alır ve TTP korelasyonuna başlar.
+
+## Saldırgan bir sondanın nasıl düşürüldüğü
+
+1. Yetkisiz bir paket NIC'e ulaşır.
+2. Katman 3'teki XDP programı kaynak IP'yi izin listesi LPM-trie'sinde arar.
+3. Kaynak izin listesinde değilse program `XDP_DROP` döndürür — hiçbir yanıt oluşturulmaz.
+4. Bir BPF haritası içindeki düşürme sayacı artar. Agent-Beta haritayı her 500 ms'de bir yoklar ve olayı diske hiçbir şey yazmayan TTP eşleyicisine iletir.
+
+Düşürme çekirdek ağ yığını çalışmadan önce gerçekleştiği için, ana makine varlığını doğrulayan herhangi bir sinyal sızdıramaz.

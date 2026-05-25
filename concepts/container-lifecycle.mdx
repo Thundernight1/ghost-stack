@@ -1,6 +1,6 @@
 ---
 title: "Container lifecycle"
-description: "How department containers are spawned, recovered after CLI restart, quarantined, and snapshotted."
+description: "How Ghost-Stack department containers are spawned, recovered after orchestrator restart, quarantined via cgroup freeze, and snapshotted for forensic analysis."
 ---
 
 Each department in Ghost-Stack runs inside its own user, network, and mount namespace triplet. The orchestrator manages the full lifecycle through `ghost-ctl` and persists state in `/var/lib/ghost-stack/orchestrator.db`.

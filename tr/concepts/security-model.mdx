@@ -1,0 +1,78 @@
+---
+title: "Güvenlik modeli"
+description: "Ghost-Stack tehdit modeli, kriptografik ilkeler, güven sınırları ve platformun açıkça kapsadığı ve kapsamadığı saldırı yüzeyleri."
+---
+
+Ghost-Stack Core belirli bir saldırgan modeline karşı tasarlanmıştır. Dağıtmadan önce neyi koruduğunu ve neyi korumadığını anlayın.
+
+## Tehdit modeli
+
+Ghost-Stack şunlara karşı savunmak üzere tasarlanmıştır:
+
+1. **Ağ seviyesinde saldırgan** — kabloda tam paket kontrolü; Nmap, Masscan, Shodan tarzı sondalar çalıştıran.
+2. **Tehlikeye atılmış konteyner** — saldırganın bir departman konteyneri içinde keyfi kod yürütmesi.
+3. **İçeriden tehdit** — geçerli kimlik bilgilerine sahip ve yetki yükseltmeye çalışan kötü niyetli aktör.
+4. **Adli kaçınma** — denetim kanıtını silmeye veya kurcalamaya çalışan saldırgan.
+
+## Ghost-Stack'in yapmadıkları
+
+- DDoS azaltma veya hız sınırlama **sağlamaz**.
+- Uygulama katmanı (L7) saldırıları için bir WAF'ı **değiştirmez**.
+- Şifrelenmiş yük içeriğini **incelemez** — TLS sonlandırma kapsam dışıdır.
+- Dağıtım hedefi olarak Windows veya macOS'u **desteklemez**.
+
+Bu yeteneklere ihtiyacınız varsa, Ghost-Stack'in önüne veya yanına katmanlayın.
+
+## Anahtar güvenlik ilkeleri
+
+| İlke | Garantisi |
+|---|---|
+| **Ed25519 imzalar** | Her durum değişikliği komutu kaynak için kriptografik kanıt gerektirir. İmzasız komutlar orkestratör durum makinesine ulaşmadan reddedilir. |
+| **BPF CO-RE** | eBPF programları yükleme anında doğrulanır. Çekirdek, güvenlik sözleşmesini ihlal eden herhangi bir programı reddeder. |
+| **Kullanıcı namespace UID eşlemesi** | Departmanlar arası yetki yükseltme, UID aralığı tahsisi yoluyla çekirdek zamanlayıcı seviyesinde engellenir. |
+| **Yalnızca ekleme WAL** | SQLite WAL günlüğü, yerinde denetim günlüğü değişikliğini engeller. |
+| **Sıfır yazma eBPF** | Agent-Alpha ve Agent-Beta yalnızca `BPF_PROG_TYPE_TRACEPOINT` yeteneklerini tutar — çekirdek durumunu değiştiremezler. |
+
+## Güven sınırları
+
+```
++----------------------------+
+|   Operator                 |   Holds Ed25519 private key
++-------------+--------------+
+              | signed command
++-------------v--------------+
+|   ghost-ctl (transient)    |   No persistent state
++-------------+--------------+
+              | UNIX socket, signature verified
++-------------v--------------+
+|   ghost-orchestrator       |   Trusted root, holds audit DB key
++-------------+--------------+
+              | namespace + cgroup syscalls
++-------------v--------------+
+|   Department container     |   Untrusted; AppArmor-confined
++----------------------------+
+```
+
+Tehlikeye atılmış bir departman konteyneri şunları yapamaz:
+
+- Başka herhangi bir departmanın namespace'ine yazma.
+- Orkestratör veritabanını veya denetim izini okuma.
+- XDP izin listesini değiştirme (BPF haritası orkestratöre aittir).
+- Agent-Alpha veya Agent-Beta'yı devre dışı bırakma (konteynerin namespace üçlüsünün dışında çalışırlar).
+
+## Anahtar yönetimi
+
+Orkestratör Ed25519 özel anahtarı `/etc/ghost-stack/orchestrator.ed25519.priv` konumunda bulunur. Bir CA root anahtarı gibi koruyun:
+
+- Mod `0400`, sahip `root`.
+- Asla kaynak kontrolüne ekleyin.
+- Operatör devri sırasında döndürün; ortak anahtar, eski imzalı komut doğrulaması için derleme anında orkestratör ikili dosyasına gömülür, ancak döndürme bekleyen imzalı komutları geçersiz kılar.
+
+## Denetim değişmezleri
+
+Yalnızca ekleme yapılabilen denetim tablosu iki değişmezi korur:
+
+1. **Silme yok.** SQLite WAL modu artı bir kısıt tetikleyicisi, denetim tablosunda `DELETE` ve `UPDATE` işlemlerini reddeder.
+2. **Yeniden sıralama yok.** Her satır, WAL kare numarasından türetilen tekdüze artan bir `seq` sütunu taşır.
+
+Bir saldırgan WAL dosyasını doğrudan bozarsa, orkestratör tutarsızlığı bir sonraki başlatmada her satır üzerinde zincirlenmiş bir Ed25519 imzasıyla algılar. Orkestratör daha sonra bir operatör kurtarma prosedürünü çalıştırana kadar komutlara hizmet etmeyi reddeder.

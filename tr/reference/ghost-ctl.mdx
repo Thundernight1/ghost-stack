@@ -1,0 +1,163 @@
+---
+title: "ghost-ctl"
+description: "Ghost-Stack ghost-ctl orkestratör CLI'sı için tam komut referansı — departman spawn, quarantine, snapshot, hierarchy ve audit-trail işlemleri."
+---
+
+`ghost-ctl`, orkestratör kontrol düzlemi CLI'sıdır. Geçici bir ikilidir — orkestratör her komutu onayladıktan hemen sonra çıkar. Tüm durum orkestratör arka plan programında ve yalnızca ekleme yapılabilen denetim veritabanında bulunur.
+
+## Söz dizimi
+
+```
+ghost-ctl [command] [arguments] [flags]
+```
+
+Canlı komut listesi için `ghost-ctl help` çalıştırın. Durum değiştiren tüm komutlar root gerektirir.
+
+## Komutlar
+
+### dept spawn
+
+Belirtilen RBAC katmanıyla yeni bir departman konteyneri başlatır.
+
+```bash
+sudo ./build/ghost-ctl dept spawn <name> <tier>
+```
+
+| Argüman | Açıklama |
+|---|---|
+| `<name>` | Departman adı. Benzersiz olmalıdır. Küçük harf, tireyle ayrılmış. |
+| `<tier>` | RBAC katmanı. `ROOT`, `DIRECTOR`, `MANAGER`, `STAFF` değerlerinden biri. Büyük/küçük harfe duyarlıdır. |
+
+Örnek:
+
+```bash
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+```
+
+Arka planda neler olduğu için bakınız [Konteyner yaşam döngüsü](/concepts/container-lifecycle#spawning-a-department).
+
+### dept quarantine
+
+Çalışan bir departmanı yalıtır. cgroup'unu dondurur, namespace'i içindeki tüm ağı düşürür ve bir bellek harita anlık görüntüsü yakalar.
+
+```bash
+sudo ./build/ghost-ctl dept quarantine <id-or-name>
+```
+
+Örnek:
+
+```bash
+sudo ./build/ghost-ctl dept quarantine finance-dept
+```
+
+Adım adım davranış için bakınız [Karantina](/concepts/container-lifecycle#quarantine).
+
+### dept snapshot
+
+Adli analiz için tam bellek ve durumu yakalar. Anlık görüntü dosyası `/var/lib/ghost-stack/snapshots/dept-<id>/` altına yerleşir.
+
+```bash
+sudo ./build/ghost-ctl dept snapshot <id-or-name>
+```
+
+Örnek:
+
+```bash
+sudo ./build/ghost-ctl dept snapshot proc-4821
+```
+
+### dept status
+
+Tüm çalışan departman konteynerlerinin durumunu yazdırır.
+
+```bash
+sudo ./build/ghost-ctl dept status
+```
+
+Çıktı, departman kimliğini, adını, katmanını, ana makine PID'ini, namespace kimliklerini ve cgroup dondurma durumunu içerir.
+
+Tek bir departmanı sorgulamak için bir kimlik geçirin:
+
+```bash
+sudo ./build/ghost-ctl dept status 0
+```
+
+### hierarchy show
+
+Dört katmanlı RBAC hiyerarşi ağacını oluşturur.
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+```
+
+Katman semantiği için bakınız [RBAC](/configuration/rbac).
+
+### audit-trail
+
+Yalnızca ekleme yapılabilen değişmez denetim izini görüntüler.
+
+```bash
+sudo ./build/ghost-ctl audit-trail
+```
+
+Örnek çıktı:
+
+```
+[GHOST-CTL] Audit Trail (append-only)
+═══════════════════════════════════
+  [2026-05-25 00:17:34] DEPT_SPAWN dept=0 result=SUCCESS
+  [2026-05-25 00:20:46] DEPT_QUARANTINE dept=0 result=SUCCESS
+═══════════════════════════════════
+```
+
+Satırlar orkestratör root anahtarı olmadan değiştirilemez veya silinemez.
+
+### version
+
+Orkestratör sürümünü ve derleme meta verisini yazdırır.
+
+```bash
+./build/ghost-ctl version
+```
+
+### help
+
+Canlı komut listesini yazdırır.
+
+```bash
+./build/ghost-ctl help
+```
+
+## Canlı günlük izleme
+
+Tüm Ghost-Stack servis günlüklerini birlikte takip edin:
+
+```bash
+sudo journalctl \
+    -u ghost-orchestrator \
+    -u ghost-agent-beta \
+    -u "ghost-agent-alpha@eth0" \
+    -f
+```
+
+Agent-Beta TTP olaylarını yapılandırılmış JSON olarak akış halinde izleyin:
+
+```bash
+sudo journalctl -u ghost-agent-beta -f --output=json
+```
+
+Yalnızca orkestratör komut denetim akışını izleyin:
+
+```bash
+sudo journalctl -u ghost-orchestrator -f
+```
+
+## Çıkış kodları
+
+| Kod | Anlamı |
+|---|---|
+| `0` | Komut başarılı oldu. |
+| `1` | Genel hata — stderr'e bakın. |
+| `2` | Geçersiz argümanlar. |
+| `13` | İmza doğrulaması başarısız oldu. |
+| `126` | `/var/lib/ghost-stack` içinde bir yol çözülürken izin reddedildi. Ana makine dizin izinlerini düzeltin; bakınız [Konteyner yaşam döngüsü](/concepts/container-lifecycle#host-directory-permissions). |

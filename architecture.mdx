@@ -1,6 +1,6 @@
 ---
 title: "Architecture"
-description: "How the control plane, agents, firewall layers, and department containers fit together inside the Linux kernel."
+description: "How the ghost-ctl control plane, eBPF observation agents, four-layer firewall, and isolated department containers fit together inside the Linux kernel."
 ---
 
 Ghost-Stack Core is built from three planes that communicate through an Ed25519-signed command bus. The orchestrator runs in userspace; every enforcement primitive runs inside the kernel.

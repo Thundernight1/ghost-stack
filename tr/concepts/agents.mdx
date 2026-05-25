@@ -1,0 +1,77 @@
+---
+title: "Ajanlar"
+description: "Agent-Alpha ve Agent-Beta'nın çekirdek izleme noktalarını, kprobe'ları ve güvenlik duvarı olaylarını gerçek zamanlı olarak MITRE ATT&CK TTP'lerine eşlemek için nasıl pasif olarak gözlemlediği."
+---
+
+Ghost-Stack iki çekirdek bağlı ajan çalıştırır. Her ikisi de BPF doğrulayıcı ve çekirdeğin yetenek modeli tarafından **yalnızca okuma** gözlemine kısıtlanmıştır — hiçbiri diske yazamaz, paketleri değiştiremez veya sistem çağrılarını engelleyemez.
+
+## Agent-Alpha — eBPF pasif gözlemci
+
+Agent-Alpha, çekirdek izleme noktalarına ve kprobe'lara karşı beş BPF sondası yükler. Her sonda, korelasyon için olayları bir BPF halka tamponu üzerinden kullanıcı alanına geri yayar.
+
+| Sonda | Çekirdek olayı | Tespit hedefi |
+|---|---|---|
+| `tp/syscalls/sys_enter_execve` | Süreç yürütme | Konteyner içinde beklenmeyen ikili dosya başlatma |
+| `tp/syscalls/sys_enter_connect` | Giden TCP / UDP bağlantısı | C2 ışını veya yanal hareket |
+| `kprobe/commit_creds` | Kimlik bilgisi değişikliği | Yetki yükseltme girişimi |
+| `tp/syscalls/sys_enter_unshare` | Namespace unshare | Konteynerden kaçış girişimi |
+| `tp/syscalls/sys_enter_openat` | Dosya açma | Hassas dosya erişim deseni |
+
+**Kaynak:** `agents/alpha/alpha.bpf.c`, `agents/alpha/observer.go`
+
+### Tasarım kısıtları
+
+- Sıfır yazma yetkisi — doğrulayıcı, çekirdek durumunu değiştiren herhangi bir yardımcı işlevi reddeder.
+- Çekirdek yürütmesini asla engellemez — sondalar uyumayan ve sınırlıdır.
+- Tüm olaylar yalnızca BPF halka tamponu üzerinden iletilir — `bpf_printk` yoktur, halka dışında harita güncellemesi yoktur.
+
+### Ne zaman kullanılır
+
+Agent-Alpha, `ghost-agent-alpha@.service` systemd şablonuyla yönetilen ağ arayüzü başına bir örnek çalıştırır. Süreç ve namespace görünürlüğü istediğiniz her arayüzde etkinleştirin:
+
+```bash
+sudo systemctl enable --now "ghost-agent-alpha@eth0"
+sudo systemctl enable --now "ghost-agent-alpha@eth1"
+```
+
+## Agent-Beta — güvenlik duvarı gözlemcisi ve TTP eşleyicisi
+
+Agent-Beta paralel olarak dört goroutine çalıştırır; her biri bağımsız bir güvenlik duvarı veri akışından okuma yapar:
+
+```
+goroutine-L1  -->  nflog ring buffer        (netlink socket)
+goroutine-L2  -->  eBPF perf_event_array
+goroutine-L3  -->  XDP drop counter BPF map (polled every 500 ms)
+goroutine-L4  -->  LSM audit netlink socket
+```
+
+**Kaynak:** `agents/beta/beta.go`, `agents/beta/profiler.go`, `agents/beta/ttp_mapper.go`
+
+### Gerçek zamanlı TTP eşlemesi
+
+TTP eşleyicisi dört akışı tüketir ve gözlemlenen dizileri MITRE ATT&CK tanımlayıcılarıyla eşler. Örneğin, aynı PID içinde `/etc/shadow` üzerinde bir `tp/openat` ardından bir `kprobe/commit_creds` olayı, `T1068 — Exploitation for Privilege Escalation` ile eşlenir.
+
+### Disk politikası
+
+Tüm olay verisi **yalnızca bellekte** yaşar. Orkestratör imzalı bir adli dışa aktarma komutu vermedikçe hiçbir şey diske ulaşmaz. Bakınız [`dept snapshot`](/reference/ghost-ctl#dept-snapshot).
+
+### Olayları akış olarak izleme
+
+Canlı TTP olaylarını JSON olarak takip edin:
+
+```bash
+sudo journalctl -u ghost-agent-beta -f --output=json
+```
+
+## Her ajanı ne zaman kullanmalı
+
+<CardGroup cols={2}>
+  <Card title="Agent-Alpha kullanın" icon="microchip">
+    Departman konteynerleri içinde süreç, kimlik bilgisi, namespace ve dosya sistemi olay görünürlüğüne ihtiyacınız olduğunda.
+  </Card>
+  <Card title="Agent-Beta kullanın" icon="layer-group">
+    Dört katmanın tümünde korele edilmiş güvenlik duvarı olaylarına ve TTP etiketlerine ihtiyacınız olduğunda.
+  </Card>
+</CardGroup>
+
+Üretim ortamında her iki ajan birlikte çalışmalıdır. Agent-Alpha, Agent-Beta'nın güvenlik duvarı olaylarını süreç bağlamıyla zenginleştirmek için gereken sistem çağrısı düzeyindeki sinyali sağlar.

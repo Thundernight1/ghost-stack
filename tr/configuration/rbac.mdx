@@ -1,0 +1,77 @@
+---
+title: "RBAC hiyerarşisi"
+description: "Organizasyonel rolleri dört Ghost-Stack RBAC katmanı boyunca çekirdek tarafından uygulanan UID aralıklarına eşleyin — ROOT, DIRECTOR, MANAGER ve STAFF — spawn örnekleriyle."
+---
+
+Ghost-Stack, Linux kullanıcı namespace'leri üzerinden dört katmanlı bir RBAC hiyerarşisi uygular. Her katman bir UID aralığına eşlenir; sınırı çekirdek zamanlayıcı uygular. Atlanabilecek bir kullanıcı alanı politika motoru yoktur.
+
+## Katmanlar
+
+```
+TierRoot      --  Full system visibility across all namespaces
+TierDirector  --  Read access to all subordinate container data
+TierManager   --  Own department + direct reports only
+TierStaff     --  Own container only; zero upward visibility
+```
+
+| Katman | UID aralığı | Tipik kullanım |
+|---|---|---|
+| `ROOT` | ayrılmış | Orkestratör ve ana makine operatörleri |
+| `DIRECTOR` | 100000 – 199999 | Departmanlar arası olay müdahalesi |
+| `MANAGER` | 200000 – 299999 | Departman liderleri |
+| `STAFF` | 300000 – 399999 | Standart departman üyeleri |
+
+UID namespace eşlemeleri orkestratör tarafından otomatik oluşturulur ve çekirdeğin `newuidmap` ve `newgidmap` yardımcılarıyla uygulanır. Departmanlar arası UID çakışmaları orkestratörün UID aralığı tahsisçisi tarafından engellenir.
+
+## Spawn sırasında bir katman atama
+
+Katmanı `dept spawn` komutunun ikinci argümanı olarak geçirin:
+
+```bash
+# ROOT katmanında Headquarters departmanı
+sudo ./build/ghost-ctl dept spawn headquarters ROOT
+
+# MANAGER katmanında Engineering
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+
+# STAFF katmanında Finance personeli
+sudo ./build/ghost-ctl dept spawn finance-ops STAFF
+```
+
+Orkestratör; `ROOT`, `DIRECTOR`, `MANAGER` ve `STAFF` dışındaki katman adlarını reddeder. Değer büyük/küçük harfe duyarlıdır.
+
+## Hiyerarşiyi inceleme
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+```
+
+Çıktı, her departmanın katmanı, PID'i ve namespace kimlikleri ile dört katmanlı ağacı oluşturur.
+
+## Her katmanı ne zaman seçmeli
+
+<CardGroup cols={2}>
+  <Card title="ROOT" icon="crown">
+    Tek bir Headquarters departmanı için ayırın. Diğer her namespace üzerinde okuma erişimi sağlar.
+  </Card>
+  <Card title="DIRECTOR" icon="shield-halved">
+    Spawn hakları olmadan alt departmanlara okuma erişimi gereken SOC veya olay müdahale ekipleri için.
+  </Card>
+  <Card title="MANAGER" icon="user-tie">
+    Kendi konteynerlerini ve doğrudan rapor alt departmanlarını yöneten departman başkanları.
+  </Card>
+  <Card title="STAFF" icon="user">
+    Son kullanıcılar için varsayılan katman. Yukarı veya yana doğru sıfır görünürlük.
+  </Card>
+</CardGroup>
+
+## Uygulamayı doğrulama
+
+Bir departman başlattıktan sonra UID eşlemesinin yerinde olduğunu doğrulayın:
+
+```bash
+sudo cat /proc/<pid>/uid_map
+#          0     100000      65536
+```
+
+İlk sütun namespace içi UID, ikincisi ana makine UID'i ve üçüncüsü aralık boyutudur. Namespace root'u ana makine `100000`'e eşlenen `MANAGER` katmanındaki bir konteyner, ana makine UID `200000`'a ait dosyaları aynı mount'u paylaşsa bile okuyamaz.

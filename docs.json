@@ -8,39 +8,85 @@
     "dark": "#4C1D95"
   },
   "navigation": {
-    "tabs": [
+    "languages": [
       {
-        "tab": "Documentation",
-        "groups": [
+        "language": "en",
+        "tabs": [
           {
-            "group": "Get started",
-            "pages": [
-              "index",
-              "quickstart",
-              "architecture"
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Get started",
+                "pages": [
+                  "index",
+                  "quickstart",
+                  "architecture"
+                ]
+              },
+              {
+                "group": "Core concepts",
+                "pages": [
+                  "concepts/firewall-layers",
+                  "concepts/agents",
+                  "concepts/container-lifecycle",
+                  "concepts/security-model"
+                ]
+              },
+              {
+                "group": "Configuration",
+                "pages": [
+                  "configuration/rbac",
+                  "configuration/allowlist"
+                ]
+              },
+              {
+                "group": "Reference",
+                "pages": [
+                  "reference/ghost-ctl",
+                  "reference/systemd-services"
+                ]
+              }
             ]
-          },
+          }
+        ]
+      },
+      {
+        "language": "tr",
+        "tabs": [
           {
-            "group": "Core concepts",
-            "pages": [
-              "concepts/firewall-layers",
-              "concepts/agents",
-              "concepts/container-lifecycle",
-              "concepts/security-model"
-            ]
-          },
-          {
-            "group": "Configuration",
-            "pages": [
-              "configuration/rbac",
-              "configuration/allowlist"
-            ]
-          },
-          {
-            "group": "Reference",
-            "pages": [
-              "reference/ghost-ctl",
-              "reference/systemd-services"
+            "tab": "Dokümantasyon",
+            "groups": [
+              {
+                "group": "Başlangıç",
+                "pages": [
+                  "tr/index",
+                  "tr/quickstart",
+                  "tr/architecture"
+                ]
+              },
+              {
+                "group": "Temel kavramlar",
+                "pages": [
+                  "tr/concepts/firewall-layers",
+                  "tr/concepts/agents",
+                  "tr/concepts/container-lifecycle",
+                  "tr/concepts/security-model"
+                ]
+              },
+              {
+                "group": "Yapılandırma",
+                "pages": [
+                  "tr/configuration/rbac",
+                  "tr/configuration/allowlist"
+                ]
+              },
+              {
+                "group": "Referans",
+                "pages": [
+                  "tr/reference/ghost-ctl",
+                  "tr/reference/systemd-services"
+                ]
+              }
             ]
           }
         ]

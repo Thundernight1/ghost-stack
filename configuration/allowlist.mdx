@@ -1,6 +1,6 @@
 ---
 title: "Layer 3 allowlist"
-description: "Sign and submit Ed25519-signed CIDR entries to the XDP invisible wall allowlist."
+description: "Sign and submit Ed25519-authenticated CIDR entries to the Ghost-Stack Layer 3 XDP invisible wall allowlist, with payload format and ghost-ctl examples."
 ---
 
 The Layer 3 invisible wall drops every packet whose source IP is not in its LPM-trie allowlist. Updates to the allowlist must be Ed25519-signed by the orchestrator key — the kernel program rejects unsigned commands.

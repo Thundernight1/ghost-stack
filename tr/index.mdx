@@ -1,0 +1,56 @@
+---
+title: "Ghost-Stack Core"
+description: "eBPF, XDP ve namespace izolasyonu kullanarak ağınızı yetkisiz tarayıcılara görünmez kılan, çekirdek seviyesinde aldatma odaklı güvenlik orkestratörü."
+---
+
+Ghost-Stack Core, Linux çekirdeği seviyesinde çalışan bir güvenlik orkestrasyon platformudur. Kriptografik olarak yalıtılmış departman konteynerlerini dört katmanlı bir eBPF aldatma güvenlik duvarının arkasına yerleştirir; böylece yetkisiz tarayıcılar ana makinenizin var olup olmadığını belirleyemez.
+
+Tüm uygulamalar çekirdeğin içinde çalışır. Kurcalayabileceğiniz, devre dışı bırakabileceğiniz veya atlayabileceğiniz bir kullanıcı alanı arka plan programı yoktur.
+
+## Neden Ghost-Stack
+
+Geleneksel güvenlik duvarları sondalara cevap verir. `RST`, `ICMP unreachable` veya TCP zaman aşımı gönderirler — her yanıt, ana makinenizin gerçek olduğunu doğrulayan bir sinyaldir. Ghost-Stack bu modeli tersine çevirir: yetkisiz paketler, çekirdek ağ yığını onları görmeden önce XDP üzerinden NIC sürücüsünde sessizce düşürülür.
+
+## Temel yetenekler
+
+<CardGroup cols={2}>
+  <Card title="Görünmez duvar" icon="ghost" href="/concepts/firewall-layers#layer-3-invisible-wall">
+    RST, ICMP veya zaman aşımı sinyali olmaksızın XDP NIC seviyesinde paket düşürme.
+  </Card>
+  <Card title="Aldatma yanıtlayıcısı" icon="mask" href="/concepts/firewall-layers#layer-2-deception-responder">
+    TC eBPF, tarayıcıları yanıltmak için sahte TLS el sıkışma hataları ve RST paketleri oluşturur.
+  </Card>
+  <Card title="Pasif eBPF gözlemi" icon="eye" href="/concepts/agents#agent-alpha">
+    Sıfır yazma yetkisiyle izlenen beş çekirdek izleme noktası.
+  </Card>
+  <Card title="Çekirdek RBAC" icon="lock" href="/configuration/rbac">
+    Kullanıcı namespace UID eşlemesi üzerinden uygulanan dört katmanlı hiyerarşi.
+  </Card>
+  <Card title="Ed25519 komut yolu" icon="key" href="/configuration/allowlist">
+    Her durum değişikliği bir kriptografik imza gerektirir.
+  </Card>
+  <Card title="Değiştirilemez denetim izi" icon="scroll" href="/reference/ghost-ctl#audit-trail">
+    Yeniden yazılamayan, yalnızca ekleme yapılabilen SQLite WAL bölümü.
+  </Card>
+</CardGroup>
+
+## Nereden başlamalı
+
+<CardGroup cols={2}>
+  <Card title="Hızlı başlangıç" icon="rocket" href="/quickstart">
+    Bağımlılıkları kurun, `ghost-ctl` derleyin ve güvenlik duvarı yığınını ayağa kaldırın.
+  </Card>
+  <Card title="Mimari" icon="diagram-project" href="/architecture">
+    Kontrol düzleminin, ajanların ve güvenlik duvarı katmanlarının nasıl bir araya geldiğini görün.
+  </Card>
+  <Card title="ghost-ctl referansı" icon="terminal" href="/reference/ghost-ctl">
+    Orkestratör CLI için tam komut referansı.
+  </Card>
+  <Card title="Güvenlik modeli" icon="shield" href="/concepts/security-model">
+    Tehdit sınırları, anahtar ilkeler ve Ghost-Stack'in yapmadıkları.
+  </Card>
+</CardGroup>
+
+<Note>
+  Ghost-Stack Core'a erişim, imzalı bir Gizlilik Sözleşmesi (NDA) ve bir Ticari Değerlendirme Sözleşmesi ile yönetilir. Bu dokümantasyon yalnızca yetkili taraflar içindir.
+</Note>

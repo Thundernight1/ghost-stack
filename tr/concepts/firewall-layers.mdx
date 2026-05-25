@@ -1,0 +1,64 @@
+---
+title: "Güvenlik duvarı katmanları"
+description: "Dört çekirdek bağlı Ghost-Stack güvenlik duvarı katmanı için referans — nftables aldatma, TC aldatma, XDP görünmez duvar ve AppArmor namespace yalıtımı."
+---
+
+Ghost-Stack güvenlik duvarı dört bağımsız katmandan oluşur. Her katman, çekirdek ağ ve güvenlik yolunun farklı bir noktasına bağlanır. Birlikte çalışarak yetkisiz ana makinelerin sizin makinenizin var olduğunu doğrulamasını imkânsız hale getirirken, yetkili trafik normal şekilde akar.
+
+## Katman 1 — Aldatma ağı (nftables)
+
+nftables üzerinden dağıtılan sentetik bir servis manzarası. Port tarayıcılar, kontrollü bal küpü işleyicilerine yönlendiren makul görünümlü açık portlar bulur. Gerçek servis uç noktalarınız aldatma düzlemine asla maruz kalmaz.
+
+- **Kaynak:** `firewall/layer1/layer1_decoy.nft`
+- **Bağlantı noktası:** nftables prerouting ve input zincirleri
+- **Ne zaman kullanın:** Tarayıcıların gerçek servisleri bulmak yerine sahte servisleri saymakla zaman ve çaba harcamasını istediğinizde.
+
+## Katman 2 — Aldatma yanıtlayıcısı
+
+Linux Trafik Kontrolü (TC) katmanına bağlanır. TC eBPF programı sonda trafiğini inceler ve bağlama uygun sahte bir yanıt üretir — örneğin bir TCP `RST`, bir `ICMP unreachable` veya bir TLS `HANDSHAKE_FAILURE`. Amaç hem otomatik tarayıcıları hem de insan operatörleri etkin biçimde yanıltmaktır.
+
+- **Kaynak:** `firewall/layer2/layer2_tc.bpf.c`, `firewall/layer2/deception_responder.go`
+- **Bağlantı noktası:** TC ingress / egress
+- **Ne zaman kullanın:** Tarayıcıların sessizlik yerine, aldatma hedeflerine yönlendiren makul olumsuz sonuçlar almasını istediğinizde.
+
+## Katman 3 — Görünmez duvar
+
+Temel gizlilik ilkesi. XDP programı **yerel** modda iliştirilir; bu mod programı NIC sürücüsünün içinde, çekirdek ağ yığını herhangi bir paketi işlemeden önce çalıştırır. Her geçer / düşür kararını bir LPM-trie izin listesi kontrol eder. İzin listesini ıskalayan kaynaklar `XDP_DROP` ile mutlak sessizlikte yanıt alır — `RST` yok, `ICMP` yok, TCP zaman aşımı yok.
+
+- **Kaynak:** `firewall/layer3/layer3_invisible.bpf.c`, `firewall/layer3/allowlist_manager.go`
+- **Bağlantı noktası:** XDP (yerel sürücü modu)
+- **Ne zaman kullanın:** Saldırganın ana makinenin var olduğuna dair hiçbir sinyale sahip olmamasını gerektiğinde.
+
+Önemli özellikler:
+
+- İzin listesi güncellemeleri orkestratörden Ed25519 ile imzalanmış bir komut gerektirir. Bakınız [İzin listesi yapılandırması](/configuration/allowlist).
+- Düşürme sayaçları çekirdek BPF haritalarında yaşar ve asla diske yazılmaz.
+- Agent-Beta sayaç haritasını `bpf_map_lookup_elem` üzerinden her 500 ms'de bir yoklar.
+
+Programı manuel olarak bir arayüze iliştirin:
+
+```bash
+sudo ip link set dev eth0 xdpdrv \
+    obj build/bpf/layer3_invisible.bpf.o sec xdp
+```
+
+## Katman 4 — Süreç ve namespace yalıtımı
+
+Departman başına AppArmor profilleri her konteyneri ihtiyaç duyduğu minimum dosya sistemi ve yetenek kümesiyle sınırlar. Namespace başına iptables kuralları departmanlar arası trafiği çekirdek seviyesinde imkânsız kılar.
+
+- **Kaynak:** `firewall/layer4/apparmor-dept-template.profile`, `firewall/layer4/namespace_iptables.sh`
+- **Bağlantı noktası:** Linux Güvenlik Modülü (LSM) + namespace başına netfilter
+- **Ne zaman kullanın:** Tehlikeye atılmış bir konteynerin bile bir komşu departmana ulaşamayacağı bir derinlikli savunma gerektiğinde.
+
+## Katman etkileşimi örneği
+
+Yetkisiz bir kaynaktan TCP port 443'ü sondalayan bir tarayıcı şunları yaşar:
+
+1. **L3 XDP** paketi NIC sürücüsü içinde düşürür. Ana makineden hiçbir yanıt ayrılmaz. Tarayıcı, erişilemez bir ana makineden ayırt edilemeyen bir TCP zaman aşımı görür.
+2. Kaynak daha sonra izin listesine eklenir ve bir aldatma portuna ulaşırsa, **L1 nftables** bağlantıyı sentetik bir dinleyiciye yönlendirir.
+3. Tarayıcı bu dinleyiciye karşı bir TLS el sıkışması girişiminde bulunursa, **L2 TC eBPF** yanıltıcı bir sunucu adına işaret eden sahte bir `HANDSHAKE_FAILURE` üretir.
+4. Tarayıcı bir departman konteynerinin içine sıçrarsa, **L4 AppArmor** ve namespace iptables başka bir departmana ulaşmasını engeller.
+
+## Gözlemlenebilirlik
+
+Her katman olaylarını Agent-Beta üzerinden yayımlar. Olay akışları ve TTP eşlemesi için bakınız [Ajanlar](/concepts/agents).

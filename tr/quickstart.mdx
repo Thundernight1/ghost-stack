@@ -1,0 +1,162 @@
+---
+title: "Hızlı başlangıç"
+description: "Çekirdek bağımlılıklarını kurun, ghost-ctl orkestratörünü derleyin, dört eBPF güvenlik duvarı katmanını dağıtın ve ilk departman konteynerinizi oluşturun."
+---
+
+Bu kılavuz, Ghost-Stack Core'u bir Linux ana makinesinde nasıl ayağa kaldıracağınızı adım adım anlatır. Çekirdek ve araç zinciri bağımlılıklarını kuracak, orkestratörü derleyecek, dört güvenlik duvarı katmanını dağıtacak ve bir departman konteyneri oluşturacaksınız.
+
+## Ön koşullar
+
+| Bileşen | Minimum | Önerilen |
+|---|---|---|
+| Linux çekirdeği | 6.1 (BPF CO-RE) | 6.6+ LTS |
+| Go | 1.22 | 1.22+ |
+| Clang / LLVM | 14 | 17+ |
+| libbpf | 1.0 | 1.3+ |
+| Yetkiler | `CAP_BPF`, `CAP_NET_ADMIN` | root olarak çalıştırın |
+
+CGO etkinleştirilmiş olmalıdır. Ayrıca `libbpf-dev` başlıklarına ve çalışan çekirdeğinizle eşleşen çekirdek başlıklarına ihtiyacınız vardır.
+
+## 1. Sistem bağımlılıklarını kurun
+
+<Tabs>
+  <Tab title="Ubuntu / Debian">
+    ```bash
+    sudo apt update
+    sudo apt install -y \
+        clang llvm libelf-dev \
+        libbpf-dev linux-headers-$(uname -r) \
+        nftables iproute2 apparmor apparmor-utils \
+        build-essential pkg-config git
+    ```
+  </Tab>
+  <Tab title="Fedora / RHEL">
+    ```bash
+    sudo dnf install -y \
+        clang llvm elfutils-libelf-devel \
+        libbpf-devel kernel-devel \
+        nftables iproute apparmor-utils \
+        gcc make pkg-config git
+    ```
+  </Tab>
+  <Tab title="Arch Linux">
+    ```bash
+    sudo pacman -S --noconfirm \
+        clang llvm libelf libbpf \
+        linux-headers nftables iproute2 \
+        apparmor base-devel git
+    ```
+  </Tab>
+</Tabs>
+
+## 2. Go 1.22+ kurun
+
+```bash
+wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+go version
+```
+
+## 3. ghost-ctl derleyin
+
+Yetkili depoyu kopyaladıktan sonra:
+
+```bash
+cd core
+go mod download
+go mod verify
+make all
+```
+
+`make all` komutu lint, testler ve ikili derlemeyi çalıştırır. Derlenmiş orkestratör `build/ghost-ctl` konumuna yerleşir.
+
+Manuel derleme için:
+
+```bash
+CGO_ENABLED=1 go build \
+    -ldflags="-s -w" \
+    -o build/ghost-ctl \
+    ./cmd/ghost-ctl/
+```
+
+## 4. Ana makine durum dizinini hazırlayın
+
+Ghost-Stack; rootfs şablonlarını, anlık görüntüleri ve orkestratör veritabanını `/var/lib/ghost-stack` altında saklar. Dizinin, eşlenmiş konteyner UID'leri tarafından geçilebilir olması gerekir; bu yüzden modu `755` olarak ayarlayın:
+
+```bash
+sudo mkdir -p /var/lib/ghost-stack
+sudo chmod 755 /var/lib/ghost-stack
+```
+
+<Warning>
+  `/var/lib/ghost-stack` mod `700` ise, konteyner init süreçleri kullanıcı namespace UID eşlemesi üzerinden `/sbin/init` veya `/bin/busybox` yollarını çözemez ve `Permission denied` (çıkış kodu 126) ile anında çıkar. Ayrıntılar için [Konteyner yaşam döngüsü](/concepts/container-lifecycle#host-directory-permissions) sayfasına bakın.
+</Warning>
+
+## 5. Güvenlik duvarı katmanlarını dağıtın
+
+```bash
+sudo bash deploy/deploy.sh
+```
+
+Yalnızca güvenlik duvarını dağıtmak için (orkestratör durumu olmadan):
+
+```bash
+sudo bash deploy/firewall_deploy.sh
+```
+
+Katman 3 XDP programını belirli bir arayüze manuel olarak iliştirmek için:
+
+```bash
+sudo ip link set dev eth0 xdpdrv \
+    obj build/bpf/layer3_invisible.bpf.o sec xdp
+```
+
+## 6. systemd servislerini başlatın
+
+```bash
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+sudo systemctl enable --now ghost-orchestrator
+sudo systemctl enable --now ghost-agent-beta
+sudo systemctl enable --now "ghost-agent-alpha@eth0"
+```
+
+Üç birimin de sağlıklı olduğunu doğrulayın:
+
+```bash
+sudo systemctl status ghost-orchestrator ghost-agent-beta "ghost-agent-alpha@eth0"
+```
+
+## 7. İlk departmanınızı oluşturun
+
+`MANAGER` katmanında bir departman konteyneri başlatın:
+
+```bash
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+```
+
+Hiyerarşiyi ve denetim izini kontrol edin:
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+sudo ./build/ghost-ctl audit-trail
+```
+
+## Sonraki adımlar
+
+<CardGroup cols={2}>
+  <Card title="ghost-ctl referansı" icon="terminal" href="/reference/ghost-ctl">
+    Tüm CLI komutları, bayrakları ve örnekleri.
+  </Card>
+  <Card title="Güvenlik duvarı katmanları" icon="layer-group" href="/concepts/firewall-layers">
+    Dört katmanlı aldatma yığınının trafiği nasıl düşürdüğü, yanılttığı ve yalıttığı.
+  </Card>
+  <Card title="RBAC yapılandırması" icon="users" href="/configuration/rbac">
+    Organizasyonel katmanları çekirdek tarafından uygulanan UID aralıklarına eşleyin.
+  </Card>
+  <Card title="İzin listesi imzalama" icon="key" href="/configuration/allowlist">
+    Katman 3 izin listesi güncellemelerini imzalayın ve gönderin.
+  </Card>
+</CardGroup>

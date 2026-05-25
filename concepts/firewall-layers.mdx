@@ -1,6 +1,6 @@
 ---
 title: "Firewall layers"
-description: "Four kernel-attached layers that hide, mislead, and isolate network traffic without exposing your real services."
+description: "Reference for the four kernel-attached Ghost-Stack firewall layers — nftables decoys, TC deception, XDP invisible wall, and AppArmor namespace isolation."
 ---
 
 The Ghost-Stack firewall is composed of four independent layers. Each layer attaches at a different point in the kernel network and security path. Together they make unauthorized hosts unable to confirm your machine exists, while authorized traffic flows normally.

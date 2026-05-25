@@ -1,0 +1,114 @@
+---
+title: "Konteyner yaşam döngüsü"
+description: "Ghost-Stack departman konteynerlerinin nasıl başlatıldığı, orkestratör yeniden başlatıldıktan sonra nasıl kurtarıldığı, cgroup dondurma ile nasıl karantinaya alındığı ve adli analiz için nasıl anlık görüntü alındığı."
+---
+
+Ghost-Stack'teki her departman, kendi kullanıcı, ağ ve mount namespace üçlüsünde çalışır. Orkestratör tüm yaşam döngüsünü `ghost-ctl` üzerinden yönetir ve durumu `/var/lib/ghost-stack/orchestrator.db` içinde kalıcı hale getirir.
+
+## Bir departman başlatma
+
+```bash
+sudo ./build/ghost-ctl dept spawn engineering MANAGER
+```
+
+Orkestratör:
+
+1. IPAM üzerinden bir UID aralığı ve bir `/24` alt ağı tahsis eder.
+2. Kullanıcı, ağ ve mount namespace'lerini oluşturur.
+3. Rootfs şablonunu `/var/lib/ghost-stack/templates/rootfs` üzerinden mount eder.
+4. AppArmor profilini departman başına şablondan uygular.
+5. Namespace üçlüsünün içinde `/sbin/init`'i başlatır.
+6. Yalnızca ekleme yapılabilen denetim tablosuna bir `DEPT_SPAWN` satırı yazar.
+
+Yeni konteynerin PID'i çağırana döndürülür ve orkestratör veritabanında kaydedilir.
+
+## Ana makine dizin izinleri
+
+Ana makine durum dizini `/var/lib/ghost-stack` mod `755` olmalıdır; böylece eşlenmiş konteyner UID'leri dizine girebilir:
+
+```bash
+sudo chmod 755 /var/lib/ghost-stack
+```
+
+<Warning>
+  Bir konteynerin kullanıcı namespace'i içinde, konteyner root'u ana makine UID `100000`'e eşlenir. UID `100000`, mod `700` olan bir dizine giremez. `/var/lib/ghost-stack`'i `700` modunda bırakırsanız, konteynerin `/sbin/init` ve `/bin/busybox` dosyaları `126 — Permission denied` çıkış koduyla çalıştırılamaz ve konteyner anında çıkar.
+</Warning>
+
+## Konteyner arka plana alma
+
+Orkestratör başlatılan süreçte kasten `Pdeathsig: syscall.SIGKILL` ayarlamaz. `ghost-ctl` geçici bir CLI'dır: spawn döndüğü anda çıkar. Konteyner bir ebeveyn ölüm sinyali devralsaydı, çekirdek `ghost-ctl` çıkar çıkmaz onu öldürür ve geride bir `Z` (zombi) girdisi kalırdı.
+
+Bunun yerine konteyner init süreci, onu normal şekilde toplayan ana makinedeki PID 1'e öksüz olarak bırakılır. Namespace üçlüsü, CLI çağrıları arasında canlı kalır.
+
+## Orkestratör yeniden başlatıldıktan sonra durum kurtarma
+
+Orkestratör süreci yeniden başlatıldığında, her etkin konteyner satırını `orchestrator.db`'den okur ve `RegisterRecoveredContainer` üzerinden bellekteki durumunu yeniden oluşturur. Bu, departman yöneticisinin bellekteki haritasını geri yükler; böylece sonraki `dept status`, `dept quarantine` ve `dept snapshot` komutları doğru biçimde çözülür.
+
+Bu adım olmadan, kurtarılan departmanlar veritabanında bulunur ancak CLI'da `department <id> not running` olarak görünür. Kurtarma her `ghost-orchestrator` başlatmasında otomatik gerçekleşir — manuel bir işlem yapmanız gerekmez.
+
+Kurtarmanın çalıştığını doğrulamak için, yeniden başlatmadan sonra çalışan departmanları listeleyin:
+
+```bash
+sudo systemctl restart ghost-orchestrator
+sudo ./build/ghost-ctl dept status
+```
+
+Yeniden başlatma öncesinde etkin olan her departman, çıktıda orijinal kimliği, katmanı ve PID'i ile görünmelidir.
+
+## Karantina
+
+```bash
+sudo ./build/ghost-ctl dept quarantine 0
+```
+
+Karantina sırayla dört adımı çalıştırır:
+
+1. **cgroup'u dondur.** `cgroup.freeze` dosyasına `1` yazar ve departmandaki her süreci çekirdek zamanlayıcısında askıya alır.
+2. **Tüm ağı düşür.** Departmanın ağ namespace'i içinde input, output ve forward için `policy drop` nftables kural kümesini yükler.
+3. **Bellek harita anlık görüntüsü al.** `/proc/<pid>/maps` dosyasını `/var/lib/ghost-stack/snapshots/dept-<id>/mem-maps-<timestamp>.txt` içine okur.
+4. **Yükselt.** Orkestratör komut yolunda bir uyarı yayar.
+
+Dondurulmuş durumu doğrulayın:
+
+```bash
+cat /sys/fs/cgroup/ghost-stack/dept-0/cgroup.freeze
+# 1
+
+cat /sys/fs/cgroup/ghost-stack/dept-0/cgroup.events
+# populated 1
+# frozen 1
+```
+
+Namespace içindeki ağ düşürme politikasını doğrulayın:
+
+```bash
+sudo nsenter -t <pid> -n nft list ruleset
+```
+
+## Anlık görüntü
+
+```bash
+sudo ./build/ghost-ctl dept snapshot proc-4821
+```
+
+`dept snapshot`, adli analiz için konteynerin tam bellek ve süreç durumunu yakalar. Anlık görüntü dosyası `/var/lib/ghost-stack/snapshots/dept-<id>/` altına yazılır ve denetim izine kaydedilir. Anlık görüntüler, Agent-Beta TTP verisinin diske ulaşabileceği tek yoldur.
+
+## Denetim
+
+Her yaşam döngüsü işlemi, yalnızca ekleme yapılabilen denetim izine bir satır yazar. Şununla inceleyin:
+
+```bash
+sudo ./build/ghost-ctl audit-trail
+```
+
+Örnek:
+
+```
+[GHOST-CTL] Audit Trail (append-only)
+═══════════════════════════════════
+  [2026-05-25 00:17:34] DEPT_SPAWN dept=0 result=SUCCESS
+  [2026-05-25 00:20:46] DEPT_QUARANTINE dept=0 result=SUCCESS
+═══════════════════════════════════
+```
+
+Altta yatan SQLite WAL günlüğü yalnızca eklemelidir — girdiler orkestratör root anahtarı olmadan değiştirilemez veya silinemez.

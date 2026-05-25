@@ -1,6 +1,6 @@
 ---
 title: "Agents"
-description: "Agent-Alpha and Agent-Beta passively observe kernel events and map behavior to MITRE ATT&CK TTPs in real time."
+description: "How Agent-Alpha and Agent-Beta passively observe kernel tracepoints, kprobes, and firewall events to map behavior to MITRE ATT&CK TTPs in real time."
 ---
 
 Ghost-Stack runs two kernel-attached agents. Both are constrained to **read-only** observation by the BPF verifier and the kernel's capability model — neither can write to disk, modify packets, or block syscalls.

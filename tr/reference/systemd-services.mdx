@@ -1,0 +1,68 @@
+---
+title: "systemd servisleri"
+description: "Bir Linux ana makinesinde Ghost-Stack orkestratörünü, Agent-Alpha'yı ve Agent-Beta'yı çalıştıran üç systemd birimini kurun, etkinleştirin, yeniden başlatın ve sağlık kontrolü yapın."
+---
+
+Ghost-Stack üç systemd birim dosyasıyla gelir. Dosyalar `systemd/` altında bulunur ve kurulum sırasında `/etc/systemd/system/` konumuna kopyalanmalıdır.
+
+## Birimler
+
+| Servis | Açıklama | Tür |
+|---|---|---|
+| `ghost-orchestrator.service` | Kontrol düzlemi orkestratör arka plan programı | `notify` |
+| `ghost-agent-beta.service` | Dört katmanlı güvenlik duvarı gözlemcisi ve TTP eşleyicisi | `simple` |
+| `ghost-agent-alpha@.service` | Arayüz başına eBPF sonda ajanı (şablonlu) | `simple` |
+
+`ghost-agent-alpha@.service` bir şablondur. Arayüz adını şablon argümanı olarak kullanarak her arayüz için bir kez örnekleyin; örneğin `ghost-agent-alpha@eth0.service`.
+
+## Kur
+
+```bash
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+## Etkinleştir ve başlat
+
+```bash
+sudo systemctl enable --now ghost-orchestrator
+sudo systemctl enable --now ghost-agent-beta
+sudo systemctl enable --now "ghost-agent-alpha@eth0"
+```
+
+İzlemek istediğiniz her arayüz için ek Alpha örneklerini etkinleştirin:
+
+```bash
+sudo systemctl enable --now "ghost-agent-alpha@eth1"
+sudo systemctl enable --now "ghost-agent-alpha@wg0"
+```
+
+## Sağlık kontrolü
+
+```bash
+sudo systemctl status \
+    ghost-orchestrator \
+    ghost-agent-beta \
+    "ghost-agent-alpha@eth0"
+```
+
+Sağlıklı bir orkestratör `Active: active (running)` ve `Status: "ready"` raporlar. Orkestratör `Type=notify` kullanır; bu nedenle systemd, BPF programları yüklendikten, SQLite WAL açıldıktan ve kurtarılan konteynerler yeniden kaydedildikten sonra birimi etkin olarak işaretler. Bakınız [Konteyner yaşam döngüsü — durum kurtarma](/concepts/container-lifecycle#state-recovery-after-orchestrator-restart).
+
+## Yapılandırma değişikliğinden sonra yeniden başlat
+
+```bash
+sudo systemctl restart ghost-orchestrator
+```
+
+Orkestratörü yeniden başlatmak, çalışan departman konteynerlerini **etkilemez** — namespace üçlüleri ana makine PID 1'e aittir. Orkestratör, sonraki `dept status`, `dept quarantine` ve `dept snapshot` komutlarının doğru şekilde çözülmesi için bunları başlatma sırasında bellekte yeniden kaydeder.
+
+## Devre dışı bırak
+
+```bash
+sudo systemctl disable --now \
+    ghost-orchestrator \
+    ghost-agent-beta \
+    "ghost-agent-alpha@eth0"
+```
+
+Birimleri devre dışı bırakmak departman konteynerlerini sökmez. Bir departmanı durdurmak için `ghost-ctl dept quarantine` ardından manuel bir sökme kullanın.

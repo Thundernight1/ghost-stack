@@ -1,6 +1,6 @@
 ---
 title: "Security model"
-description: "Threat boundaries, key cryptographic primitives, and the attack surfaces Ghost-Stack explicitly does and does not cover."
+description: "Ghost-Stack threat model, cryptographic primitives, trust boundaries, and the attack surfaces the platform explicitly does and does not cover."
 ---
 
 Ghost-Stack Core is designed against a specific adversary model. Understand what it does and does not protect before you deploy it.
@@ -75,4 +75,4 @@ The append-only audit table preserves two invariants:
 1. **No deletion.** SQLite WAL mode plus a constraint trigger rejects `DELETE` and `UPDATE` on the audit table.
 2. **No reordering.** Every row carries a monotonic `seq` column derived from the WAL frame number.
 
-If an attacker corrupts the WAL file directly, the orchestrator detects the discrepancy on next startup via a chained Ed25519 signature over each row and refuses to serve commands until an operator runs the recovery procedure.
+If an attacker corrupts the WAL file directly, the orchestrator detects the discrepancy on the next startup via a chained Ed25519 signature over each row. The orchestrator then refuses to serve commands until an operator runs the recovery procedure.

@@ -1,0 +1,82 @@
+---
+title: "Katman 3 izin listesi"
+description: "Ghost-Stack Katman 3 XDP görünmez duvar izin listesine Ed25519 ile doğrulanmış CIDR girdileri imzalayın ve gönderin — yük biçimi ve ghost-ctl örnekleri."
+---
+
+Katman 3 görünmez duvar, kaynak IP'si LPM-trie izin listesinde olmayan her paketi düşürür. İzin listesine yapılan güncellemeler orkestratör anahtarıyla Ed25519 imzalı olmalıdır — çekirdek programı imzasız komutları reddeder.
+
+## ghost-ctl üzerinden bir girdi gönderme
+
+En basit yol, yükü orkestratör anahtar dosyasıyla imzalayan `ghost-ctl`'dir:
+
+```bash
+sudo ./build/ghost-ctl allowlist add \
+    --cidr 10.0.10.0/24 \
+    --key /etc/ghost-stack/orchestrator.ed25519.priv
+```
+
+Komut:
+
+1. Aşağıdaki kanonik JSON yükünü oluşturur.
+2. Yükü `--key` ile belirtilen Ed25519 özel anahtarıyla imzalar.
+3. İmzalı komutu orkestratöre UNIX soketi üzerinden gönderir.
+4. Orkestratör imzayı doğrular, denetim izine bir satır yazar ve çekirdek BPF haritasını günceller.
+
+## İmzalı yük biçimi
+
+Orkestratör yükleri bu kanonik JSON biçiminde kabul eder:
+
+```json
+{
+  "op": "allowlist_add",
+  "cidr": "10.0.10.0/24",
+  "comment": "SOC team VPN range",
+  "issued_at": "2026-01-15T09:00:00Z",
+  "signature": "<ed25519_base64>"
+}
+```
+
+Alan referansı:
+
+| Alan | Tür | Amaç |
+|---|---|---|
+| `op` | string | `allowlist_add` veya `allowlist_remove` olmalıdır. |
+| `cidr` | string | IPv4 veya IPv6 CIDR. Tek ana makineler `/32` veya `/128` kullanır. |
+| `comment` | string | Serbest biçim. Denetim izinde saklanır. |
+| `issued_at` | RFC 3339 zaman damgası | Beş dakikadan eskiyse reddedilir (yeniden oynatma koruması). |
+| `signature` | base64 string | Kanonik JSON eksi `signature` alanı üzerindeki Ed25519 imzası. |
+
+## Mevcut girdileri listeleme
+
+```bash
+sudo ./build/ghost-ctl allowlist list
+```
+
+Çıktı, BPF harita içeriğini yazdırır — bunlar çekirdeğin etkin olarak uyguladığı girdilerdir, kullanıcı alanı önbelleği değildir.
+
+## Bir girdiyi kaldırma
+
+```bash
+sudo ./build/ghost-ctl allowlist remove \
+    --cidr 10.0.10.0/24 \
+    --key /etc/ghost-stack/orchestrator.ed25519.priv
+```
+
+`allowlist remove`, `allowlist add` ile aynı imzalama kurallarını izler. Denetim izi hem ekleme hem kaldırma işlemlerini orijinal imzalayan anahtar parmak iziyle kaydeder.
+
+## İzin listesi ne zaman güncellenir
+
+<CardGroup cols={2}>
+  <Card title="Ekle" icon="circle-plus">
+    SOC VPN aralıkları, izleme tarayıcıları, ortak entegrasyonlar — gerçek servislere ulaşmasına izin verilmesi gereken her şey.
+  </Card>
+  <Card title="Kaldır" icon="circle-minus">
+    Kullanımdan kaldırılan aralıklar, döndürülmüş VPN havuzları, Agent-Beta tarafından tehlikeye atılmış olarak işaretlenmiş aralıklar.
+  </Card>
+</CardGroup>
+
+## Operasyonel notlar
+
+- Güncellemeler bir çekirdek BPF haritasına iner ve **sonraki pakette** etkili olur. Çekirdek yeniden yüklemesi yoktur.
+- Her `XDP_DROP` kararı için düşürme sayacı ayrı bir BPF haritasında yaşar. Agent-Beta haritayı her 500 ms'de bir yoklar. Bakınız [Ajanlar](/concepts/agents).
+- İzin listesi durumu `ghost-orchestrator` yeniden başlatmalarına dayanır çünkü orkestratör başlatma sırasında girdileri denetim izinden geri yükler.

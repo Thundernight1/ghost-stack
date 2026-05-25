@@ -1,6 +1,6 @@
 ---
 title: "RBAC hierarchy"
-description: "Map organizational tiers to kernel-enforced UID ranges across the four Ghost-Stack RBAC levels."
+description: "Map organizational roles to kernel-enforced UID ranges across the four Ghost-Stack RBAC tiers — ROOT, DIRECTOR, MANAGER, and STAFF — with spawn examples."
 ---
 
 Ghost-Stack enforces a four-tier RBAC hierarchy through Linux user namespaces. Each tier maps to a UID range; the kernel scheduler enforces the boundary. There is no userspace policy engine that can be bypassed.
