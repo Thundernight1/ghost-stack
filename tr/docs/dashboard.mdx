@@ -1,0 +1,91 @@
+---
+title: "Görsel güvenlik panosu"
+description: "Güvenlik duvarı katmanlarını, MITRE ATT&CK ilişkilendirmesini ve departman hiyerarşisini gerçek zamanlı izlemek için Ghost-Stack görsel kontrol düzlemini açın."
+---
+
+Güvenlik panosu, Ghost-Stack Core için tek sayfalık bir kontrol düzlemi görüntüleyicisidir. Güvenlik duvarı sayaçlarını, saldırı tekniği ilişkilendirmesini, canlı denetim izini ve departman durumunu tek bir ekranda sunar; böylece nöbetçi operatörler sistem sağlığını bir bakışta okuyabilir.
+
+Panoyu [`ghost-ctl`](/tr/docs/ghost-ctl) için görsel bir tamamlayıcı olarak kullanın — örneğin olay müdahalesi, demolar veya rutin sağlık kontrolleri sırasında.
+
+## Panoyu açın
+
+Pano, derleme adımı olmayan tek başına bir HTML dosyası olarak gelir. Doğrudan açın:
+
+```bash
+xdg-open demo/dashboard/index.html
+```
+
+Orkestratör uzak bir ana bilgisayarda çalışıyorsa bir iş istasyonunda sunun:
+
+```bash
+cd demo/dashboard
+python3 -m http.server 8080
+```
+
+Ardından `http://localhost:8080` adresine göz atın.
+
+<Note>
+  Pano, orkestratör tarafından dışa aktarılan canlı sayaçları ve denetim girdilerini okur. Orkestratörü (`ghost-orchestrator.service`) aynı ana bilgisayarda çalıştırın veya açmadan önce panoyu dışa aktarılan metrik uç noktasına yönlendirin.
+</Note>
+
+## Paneller
+
+### 4 katmanlı aldatma güvenlik duvarı
+
+Dört uygulama katmanının her biri için canlı paket sayaçlarını gösterir:
+
+| Katman | Motor | Ne sayar |
+|---|---|---|
+| Katman 1 | nftables | Kullanıcı alanında üretilen sahte yanıtlar. |
+| Katman 2 | TC eBPF | Bağlamsal sahte RST ve TLS hata paketleri. |
+| Katman 3 | XDP | Yanıtsız NIC sürücü düzeyinde düşürmeler. |
+| Katman 4 | AppArmor | Departman profillerinden gelen LSM reddi. |
+
+Trafiğin mümkün olan en düşük katmanda emildiğini doğrulamak için bu paneli kullanın. Sağlıklı bir duruşta Katman 3 toplamlarda baskındır.
+
+### MITRE ATT&CK TTP ilişkilendirmesi
+
+Gözlemlenen olayları ATT&CK tekniklerine (T1046, T1110, T1190, T1068, T1210, T1071) eşler. Agent-Beta'nın TTP eşleyicisi yeni bir olayı ilgili tekniğe atfettiğinde kartlar yanar. Tehdit bağlamını çekirdek dışı kitlelere iletmek için bu paneli kullanın.
+
+### Canlı denetim izi ve orkestrasyon veri yolu
+
+Yalnızca ekleme yapılabilen denetim günlüğünü akıtır: departman oluşturmaları, karantinalar, anlık görüntüler ve imzalı komut alındıları. Girdiler `ghost-ctl audit-trail` çıktısıyla eşleşir.
+
+### Görünmezlik göstergesi
+
+Kurumsal saldırı yüzeyinin dış taramalara görünmez olan yüzdesini görüntüler. Toplam gelen pakete oranla XDP tarafından düşürülen tarama paketlerinin oranıyla hesaplanır.
+
+### Hiyerarşi sınırları
+
+Aktif departmanlar vurgulanmış olarak departman ağacını (ROOT → DIRECTOR → MANAGER → STAFF) görüntüler. PID ve kademesini görmek için herhangi bir düğümün üzerine gelin.
+
+### Tehdit aktörü profilleri
+
+Agent-Beta'dan profili çıkarılmış düşmanları özetler — tarayıcı parmak izleri, kaba kuvvet kaynakları ve istismar girişimleri.
+
+### XDP düşürme oranı (paket/sn)
+
+Katman 3 tarafından düşürülen paketlerin zaman serisi grafiği. Buradaki sıçramalar aktif keşfi gösterir.
+
+## Yenileme oranını ve veri kaynağını yapılandırın
+
+Pano, orkestratör tarafından dışa aktarılan küçük bir JSON uç noktasından okur. Varsayılanları `demo/dashboard/index.html` dosyasının başında geçersiz kılın:
+
+```js
+const CONFIG = {
+  // Orchestrator metrics endpoint. Defaults to same-origin.
+  metricsUrl: "/api/metrics",
+  // Audit-trail tail endpoint.
+  auditUrl:   "/api/audit/tail",
+  // Refresh interval in milliseconds.
+  refreshMs:  2000,
+};
+```
+
+Düzenledikten sonra sayfayı yeniden başlatın. Orkestratör başka bir ana bilgisayardaysa `metricsUrl` ve `auditUrl` değerlerini onun adresine yönlendirin ve CORS'un pano kaynağı için izinli olduğundan emin olun.
+
+## Sorun giderme
+
+- **Tüm sayaçlar sıfırda kalıyor.** Pano metrik uç noktasına ulaşamıyor. Orkestratörün çalıştığını ve `metricsUrl` değerinin tarayıcınızdan çözümlendiğini doğrulayın.
+- **MITRE kartları hiç yanmıyor.** Agent-Beta TTP'leri dışa aktarmıyor. `ghost-agent-beta.service` servisinin etkin olduğunu ve TTP eşleyicisinin eğitim verisine sahip olduğunu kontrol edin.
+- **Denetim akışı boş ama `ghost-ctl audit-trail` girdiler içeriyor.** Denetim uç noktası yolu yanlış ya da orkestratör kullanıcısı denetim günlüğü dosyasını okuyamıyor. Dağıtımınızın kullandığı yolla eşleştirin.

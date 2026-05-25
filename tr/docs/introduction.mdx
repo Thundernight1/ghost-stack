@@ -1,0 +1,28 @@
+---
+title: "Ghost-Stack Core genel bakış"
+description: "Ghost-Stack Core; eBPF, XDP ve Linux ad alanları üzerine kurulu, görünmez ağ savunması için çekirdek düzeyinde bir aldatma güvenlik orkestratörüdür."
+---
+
+Ghost-Stack Core, ağınızı yetkisiz gözlemcilerden gizler ve izolasyonu çekirdek içinde zorunlu kılar. Geleneksel bir güvenlik duvarı taramalara reddetme yanıtı verirken, Ghost-Stack paketleri NIC sürücüsünde sessizce düşürür ve saldırganları topolojiniz hakkında yanıltan sahte yanıtlar üretir.
+
+## Neler elde edersiniz
+
+- **4 katmanlı aldatma güvenlik duvarı** — nftables, TC eBPF, XDP ve AppArmor birlikte çalışır; böylece port taramaları kullanışlı hiçbir şey döndürmez.
+- **Departman izolasyonu** — her organizasyon birimi kendi kullanıcı, ağ ve bağlama (mount) ad alanı üçlüsünde çalışır.
+- **Kurcalanamaz gözlem** — Agent-Alpha çekirdek izleme noktalarını sıfır yazma yetkisiyle okur.
+- **İmzalı kontrol düzlemi** — her durum değişikliği bir Ed25519 imzasıyla kapılanır.
+- **Değiştirilemez denetim izi** — süreç yeniden başlatmalarından sağ çıkan, yalnızca ekleme yapılabilen günlükler.
+
+## Sonraki adım
+
+<CardGroup cols={2}>
+  <Card title="Hızlı başlangıç" icon="rocket" href="/tr/docs/quickstart">
+    Ghost-Stack'i kurun ve ilk departmanınızı oluşturun.
+  </Card>
+  <Card title="Güvenlik panosu" icon="gauge" href="/tr/docs/dashboard">
+    Görsel kontrol düzlemini açın ve güvenlik duvarını gerçek zamanlı izleyin.
+  </Card>
+  <Card title="ghost-ctl komut satırı" icon="terminal" href="/tr/docs/ghost-ctl">
+    Her orkestratör eylemini komut satırından yönetin.
+  </Card>
+</CardGroup>

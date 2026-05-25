@@ -8,22 +8,51 @@
     "dark": "#070a13"
   },
   "navigation": {
-    "tabs": [
+    "languages": [
       {
-        "tab": "Guides",
-        "groups": [
+        "language": "en",
+        "tabs": [
           {
-            "group": "Get started",
-            "pages": [
-              "docs/introduction",
-              "docs/quickstart"
+            "tab": "Guides",
+            "groups": [
+              {
+                "group": "Get started",
+                "pages": [
+                  "docs/introduction",
+                  "docs/quickstart"
+                ]
+              },
+              {
+                "group": "Operate",
+                "pages": [
+                  "docs/dashboard",
+                  "docs/ghost-ctl"
+                ]
+              }
             ]
-          },
+          }
+        ]
+      },
+      {
+        "language": "tr",
+        "tabs": [
           {
-            "group": "Operate",
-            "pages": [
-              "docs/dashboard",
-              "docs/ghost-ctl"
+            "tab": "Rehberler",
+            "groups": [
+              {
+                "group": "Başlangıç",
+                "pages": [
+                  "tr/docs/introduction",
+                  "tr/docs/quickstart"
+                ]
+              },
+              {
+                "group": "Operasyon",
+                "pages": [
+                  "tr/docs/dashboard",
+                  "tr/docs/ghost-ctl"
+                ]
+              }
             ]
           }
         ]

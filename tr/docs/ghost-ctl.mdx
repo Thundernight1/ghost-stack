@@ -1,0 +1,101 @@
+---
+title: "ghost-ctl komut referansı"
+description: "ghost-ctl komut satırı referansı: departman oluşturun, tehditleri karantinaya alın, adli anlık görüntüler yakalayın ve imzalı denetim izini okuyun."
+---
+
+`ghost-ctl`, Ghost-Stack Core için kontrol düzlemi komut satırı aracıdır. Verdiği her durum değişikliği orkestratöre ulaşmadan önce Ed25519 ile imzalanır; bu nedenle imzasız çağrılar çekirdek tarafındaki uygulama katmanı tarafından reddedilir.
+
+Tam komut listesini görmek için istediğiniz zaman `ghost-ctl help` çalıştırın.
+
+## Komutlar
+
+### `dept spawn`
+
+Belirli bir hiyerarşi kademesinde bir departman konteyneri oluşturun.
+
+```bash
+sudo ghost-ctl dept spawn <ID> <NAME> <TIER> [PARENT_ID]
+```
+
+- `ID` — benzersiz tamsayı departman kimliği.
+- `NAME` — okunabilir etiket.
+- `TIER` — `ROOT`, `DIRECTOR`, `MANAGER`, `STAFF` değerlerinden biri.
+- `PARENT_ID` — `ROOT` dışındaki her kademe için gereklidir.
+
+Örnek — dört kademeli bir zincir oluşturun:
+
+```bash
+sudo ghost-ctl dept spawn 0   "Headquarters" ROOT
+sudo ghost-ctl dept spawn 1   "Engineering"  DIRECTOR 0
+sudo ghost-ctl dept spawn 10  "Backend Team" MANAGER  1
+sudo ghost-ctl dept spawn 100 "dev-alice"    STAFF    10
+```
+
+### `dept quarantine`
+
+Çalışan bir departmanı dondurun ve tüm ağ trafiğini düşürün. Tehlikeye atılmış bir kiracıya verilecek ilk yanıt olarak kullanın.
+
+```bash
+sudo ghost-ctl dept quarantine <ID>
+```
+
+Karantina dört adımı sırayla gerçekleştirir: cgroup'u dondurur, departmanın ağ ad alanına tümünü düşür kuralı kurar, bir `/proc/[pid]/mem` anlık görüntüsü yakalar ve orkestrasyon veri yolunda uyarı yayar.
+
+### `dept snapshot`
+
+İş yükünü dondurmadan departman durumunu (bellek haritaları ve meta veriler) yakalayın. Hâlâ çalışan bir departman üzerinde adli inceleme için yararlıdır.
+
+```bash
+sudo ghost-ctl dept snapshot <ID>
+```
+
+Anlık görüntüler `/var/lib/ghost-stack/snapshots/dept-<ID>/` altına düşer.
+
+### `dept status`
+
+PID, kademe, ebeveyn ve karantina durumu dahil olmak üzere tek bir departmanın durumunu yazdırır.
+
+```bash
+sudo ghost-ctl dept status <ID>
+```
+
+### `hierarchy show`
+
+Tam departman ağacını görüntüler.
+
+```bash
+sudo ghost-ctl hierarchy show
+```
+
+### `audit-trail`
+
+Yalnızca ekleme yapılabilen denetim günlüğünü yazdırır. Bu günlük dosyası, [panonun](/tr/docs/dashboard) Canlı Denetim İzi paneline akıttığı veriyle aynıdır.
+
+```bash
+sudo ghost-ctl audit-trail
+```
+
+### `version`
+
+Derleme sürümünü yazdırır.
+
+```bash
+ghost-ctl version
+```
+
+## Kademeler
+
+| Kademe | Rol | Üst olabileceği kademe |
+|---|---|---|
+| `ROOT` | Organizasyonun tepesi. Dağıtım başına tam olarak bir tane. | `DIRECTOR` |
+| `DIRECTOR` | Bölüm düzeyi. | `MANAGER` |
+| `MANAGER` | Ekip düzeyi. | `STAFF` |
+| `STAFF` | Bireysel iş yükü. | Yok |
+
+Kademe kuralları oluşturma sırasında ve çalışma zamanında kullanıcı ad alanı UID eşlemesi aracılığıyla zorunlu kılınır.
+
+## Çıkış kodları
+
+- `0` — komut başarılı oldu.
+- `1` — geçersiz argümanlar veya kullanım hatası.
+- `[GHOST-CTL]` hata satırlı sıfır olmayan kod — orkestratör komutu reddetti (çoğunlukla imza hatası veya hiyerarşi ihlali).

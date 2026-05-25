@@ -1,0 +1,59 @@
+---
+title: "Hızlı başlangıç: derleyin ve departman oluşturun"
+description: "Ghost-Stack Core ikili dosyalarını derleyin, ilk departman konteynerinizi oluşturun ve çekirdek ad alanı izolasyonunu on dakikadan kısa sürede doğrulayın."
+---
+
+Bu sayfa sizi minimum bir uçtan uca akışta yönlendirir: ikili dosyaları derleyin, bir departman oluşturun ve ad alanı sınırlarının canlı olduğunu doğrulayın.
+
+## Önkoşullar
+
+- eBPF, XDP ve cgroups v2 etkin Linux çekirdeği 6.1 veya üzeri.
+- Go 1.22 veya üzeri.
+- eBPF programları için `clang`, `llvm` ve `libbpf` başlık dosyaları.
+- Hedef ana bilgisayarda root yetkileri (orkestratör çekirdek nesnelerini yönetir).
+
+## 1. İkili dosyaları derleyin
+
+Depo kökünden:
+
+```bash
+make build
+```
+
+Bu komut `build/ghost-ctl` ve systemd servisleri tarafından kullanılan ajan ikili dosyalarını üretir.
+
+## 2. İlk departmanınızı oluşturun
+
+Departmanlar izolasyon birimidir. Her biri bir kullanıcı, ağ ve bağlama ad alanı üçlüsünde çalışır ve hiyerarşideki bir kademe tarafından yönetilir.
+
+```bash
+sudo ./build/ghost-ctl dept spawn 0 "Headquarters" ROOT
+```
+
+Bir `DEPT_SPAWN` onayı görmelisiniz. Çalışan ağacı inceleyin:
+
+```bash
+sudo ./build/ghost-ctl hierarchy show
+```
+
+## 3. İzolasyonu doğrulayın
+
+`hierarchy show` çıktısından konteyner PID'sini öğrenin, ardından ad alanına girerek ana bilgisayarın içeriyi göremediğini doğrulayın:
+
+```bash
+sudo nsenter -t <PID> -u hostname
+# → ghost-dept-0
+
+sudo nsenter -t <PID> -n ip addr show
+# → 10.200.x.x üzerinde izole edilmiş veth
+```
+
+## 4. Canlı etkinliği izleyin
+
+Güvenlik duvarı sayaçlarını, MITRE ATT&CK ilişkilendirmelerini ve canlı denetim akışını görmek için bir tarayıcıda `demo/dashboard/index.html` dosyasını açın. Her panelin turu için [Güvenlik panosu](/tr/docs/dashboard) sayfasına bakın.
+
+## Sonraki adımlar
+
+- `ghost-ctl dept spawn <ID> <NAME> <TIER> <PARENT_ID>` ile alt departmanlar ekleyin.
+- `ghost-ctl dept quarantine <ID>` ile olay müdahalesi pratiği yapın.
+- Tam komut yüzeyini [ghost-ctl referansında](/tr/docs/ghost-ctl) inceleyin.
