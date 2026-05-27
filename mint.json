@@ -12,6 +12,12 @@
       "pages": [
         "walkthrough"
       ]
+    },
+    {
+      "group": "Operations",
+      "pages": [
+        "authentication"
+      ]
     }
   ]
 }
