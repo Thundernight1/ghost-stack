@@ -275,7 +275,7 @@ func (kv *KeyVault) InitializeDepartmentDB(deptID int, deptName string, tier hie
 	volumePath := filepath.Join(kv.basePath, "volumes", fmt.Sprintf("dept-%d.luks2", deptID))
 	mountPoint := filepath.Join(kv.basePath, "mounts", fmt.Sprintf("dept-%d", deptID))
 	backupDir := filepath.Join(kv.basePath, "backups", fmt.Sprintf("dept-%d", deptID))
-	gpgKeyID := fmt.Sprintf("dept-%d@ghoststack.internal", deptID)
+	gpgKeyID := fmt.Sprintf("dept-%d@xio.cybersurhub.com", deptID)
 
 	// Create directories.
 	for _, d := range []string{mountPoint, backupDir} {
