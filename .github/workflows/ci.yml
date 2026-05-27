@@ -68,6 +68,8 @@ jobs:
 
       - name: Run unit tests
         run: |
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          export GORACE="history_size=1"
           go test -v -race -count=1 -timeout=120s \
             -coverprofile=coverage.out \
             ./hierarchy/... \
@@ -131,11 +133,13 @@ jobs:
       - name: Install clang & BPF headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-headers-$(uname -r) || true
+          sudo apt-get install -y clang-17 llvm libbpf-dev linux-headers-$(uname -r) linux-tools-common linux-tools-generic || true
+          sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h || true
+          sudo cp vmlinux.h /usr/include/vmlinux.h || true
 
       - name: Compile Layer 2 TC BPF
         run: |
-          clang -O2 -g -target bpf \
+          clang-17 -O2 -g -target bpf \
             -D__TARGET_ARCH_x86 \
             -I/usr/include \
             -c firewall/layer2/layer2_tc.bpf.c \
@@ -143,7 +147,7 @@ jobs:
 
       - name: Compile Layer 3 XDP BPF
         run: |
-          clang -O2 -g -target bpf \
+          clang-17 -O2 -g -target bpf \
             -D__TARGET_ARCH_x86 \
             -I/usr/include \
             -c firewall/layer3/layer3_invisible.bpf.c \
@@ -151,7 +155,7 @@ jobs:
 
       - name: Compile AGENT-ALPHA BPF
         run: |
-          clang -O2 -g -target bpf \
+          clang-17 -O2 -g -target bpf \
             -D__TARGET_ARCH_x86 \
             -I/usr/include \
             -c agents/alpha/alpha.bpf.c \
