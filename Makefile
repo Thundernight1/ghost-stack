@@ -8,7 +8,7 @@ BINARY     := ghost-ctl
 BUILD_DIR  := build
 GO         := go
 CGO        := CGO_ENABLED=1
-CLANG      := clang
+CLANG      ?= clang
 BPF_FLAGS  := -O2 -g -target bpf -D__TARGET_ARCH_x86
 LDFLAGS    := -s -w
 GOFLAGS    := -race
