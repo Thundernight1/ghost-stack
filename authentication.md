@@ -1,9 +1,9 @@
 ---
-title: "Authentication and company email domain"
-description: "Configure FIDO2 hardware-bound sessions and the xio.cybersurhub.com domain allowlist for GHOST-STACK CORE."
+title: "Authenticate operators with FIDO2 and company email"
+description: "Enroll FIDO2 hardware tokens, issue OTPs to the xio.cybersurhub.com company email domain, and bind session tokens to a device fingerprint."
 ---
 
-GHOST-STACK CORE gates all device registration and session issuance behind a single company email domain. Only addresses ending in **`@xio.cybersurhub.com`** can enroll a FIDO2 device, complete OTP verification, or receive a session token. External providers are blocked both at the application layer and by the network namespace's egress filter.
+GHOST-STACK CORE gates all device registration and session issuance behind a single company email domain. Only addresses ending in **`@xio.cybersurhub.com`** can enroll a FIDO2 device, complete OTP verification, or receive a session token. The application layer and the network namespace egress filter both block external providers.
 
 Use this page when you provision a new operator, onboard a hardware token, or troubleshoot an authentication failure.
 
