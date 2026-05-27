@@ -33,10 +33,10 @@ func TestIsCompanyEmail(t *testing.T) {
 		email string
 		want  bool
 	}{
-		{"alice@ghoststack.internal", true},
-		{"admin.dev@ghoststack.internal", true},
+		{"alice@xio.cybersurhub.com", true},
+		{"admin.dev@xio.cybersurhub.com", true},
 		{"bob@gmail.com", false},
-		{"eve@ghoststack.external", false},
+		{"eve@xio.cybersurhub.external", false},
 		{"invalid-email", false},
 	}
 
@@ -55,15 +55,15 @@ func TestRegisterDevice_Success(t *testing.T) {
 		DeviceFingerprint: "hw-uuid-1234",
 	}
 
-	err := sm.RegisterDevice("alice@ghoststack.internal", attestation)
+	err := sm.RegisterDevice("alice@xio.cybersurhub.com", attestation)
 	if err != nil {
 		t.Fatalf("RegisterDevice failed: %v", err)
 	}
 
-	if !sm.registeredEmails["alice@ghoststack.internal"] {
+	if !sm.registeredEmails["alice@xio.cybersurhub.com"] {
 		t.Error("email not marked as registered")
 	}
-	if sm.deviceToUser["hw-uuid-1234"] != "alice@ghoststack.internal" {
+	if sm.deviceToUser["hw-uuid-1234"] != "alice@xio.cybersurhub.com" {
 		t.Error("device not mapped to user")
 	}
 }
@@ -119,7 +119,7 @@ func TestVerifyFIDO2Attestation(t *testing.T) {
 func TestAuthenticationFlow(t *testing.T) {
 	sm, _ := NewSessionManager()
 
-	email := "bob@ghoststack.internal"
+	email := "bob@xio.cybersurhub.com"
 	fingerprint := "hw-uuid-bob-999"
 
 	// 1. Register
@@ -199,7 +199,7 @@ func setupAuthFlow(t *testing.T) (*SessionManager, *OTPChallenge, string, string
 		t.Fatalf("NewSessionManager: %v", err)
 	}
 
-	email := "operator@ghoststack.internal"
+	email := "operator@xio.cybersurhub.com"
 	fp := "hw-uuid-test-0001"
 
 	att := &FIDO2Attestation{
@@ -394,7 +394,7 @@ func TestRevokeAllForDevice(t *testing.T) {
 		t.Fatalf("NewSessionManager: %v", err)
 	}
 
-	email := "multi@ghoststack.internal"
+	email := "multi@xio.cybersurhub.com"
 	fp := "hw-uuid-multi-device"
 
 	att := &FIDO2Attestation{
@@ -438,7 +438,7 @@ func TestCleanupExpiredSessions(t *testing.T) {
 		t.Fatalf("NewSessionManager: %v", err)
 	}
 
-	email := "cleanup@ghoststack.internal"
+	email := "cleanup@xio.cybersurhub.com"
 	fp := "hw-uuid-cleanup"
 
 	att := &FIDO2Attestation{
@@ -497,7 +497,7 @@ func TestConcurrentSessions(t *testing.T) {
 	devices := make([]deviceInfo, goroutines)
 
 	for i := 0; i < goroutines; i++ {
-		email := "user" + itoa(i) + "@ghoststack.internal"
+		email := "user" + itoa(i) + "@xio.cybersurhub.com"
 		fp := "hw-uuid-concurrent-" + itoa(i)
 		att := &FIDO2Attestation{
 			CredentialID:      []byte("cred-" + itoa(i)),
@@ -564,7 +564,7 @@ func BenchmarkTokenCreation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := sm.createSessionToken("bench@ghoststack.internal", "fp-bench", 1, "ANALYST")
+		_, err := sm.createSessionToken("bench@xio.cybersurhub.com", "fp-bench", 1, "ANALYST")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -577,7 +577,7 @@ func BenchmarkTokenValidation(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	email := "bench@ghoststack.internal"
+	email := "bench@xio.cybersurhub.com"
 	fp := "hw-uuid-bench-valid"
 
 	att := &FIDO2Attestation{

@@ -677,7 +677,7 @@ func writeEtcFiles(rootFS string) {
 		"etc/group":        "root:x:0:\nnogroup:x:65534:\n",
 		"etc/hostname":     "ghost-dept\n",
 		"etc/hosts":        "127.0.0.1 localhost\n::1 localhost ip6-localhost\n",
-		"etc/resolv.conf":  "nameserver 10.200.0.1\nsearch ghoststack.internal\n",
+		"etc/resolv.conf":  "nameserver 10.200.0.1\nsearch xio.cybersurhub.com\n",
 		"etc/nsswitch.conf": "passwd: files\ngroup: files\nhosts: files dns\n",
 	}
 	for name, content := range etcFiles {

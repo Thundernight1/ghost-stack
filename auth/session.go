@@ -27,7 +27,7 @@ import (
 
 // CompanyEmailDomain is the only allowed email domain for authentication.
 // External email providers are blocked at network namespace level.
-const CompanyEmailDomain = "ghoststack.internal"
+const CompanyEmailDomain = "xio.cybersurhub.com"
 
 // SessionTTL is the maximum lifetime of a session token.
 const SessionTTL = 8 * time.Hour
