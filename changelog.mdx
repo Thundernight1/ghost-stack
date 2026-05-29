@@ -1,0 +1,44 @@
+---
+title: "Changelog"
+description: "Product updates and improvements to GHOST-STACK CORE."
+---
+
+## Week of May 26, 2026
+
+The first public release of GHOST-STACK CORE is now available to NDA partners. This release ships the full kernel-level deception platform — invisible firewall, isolated department containers, signed control plane, and tamper-proof audit trail.
+
+### New features
+
+**4-layer eBPF deception firewall.** Your network is invisible to unauthorized observers. Layer 1 (nftables decoys), Layer 2 (TC eBPF deception responder), Layer 3 (XDP invisible wall), and Layer 4 (AppArmor + iptables per-namespace) work together so port scanners get either silence or convincingly fake responses — never a real signal.
+
+**Department namespace isolation.** Run each organizational unit in its own user, network, and mount namespace triplet. Spawn, quarantine, and snapshot departments on demand using `ghost-ctl dept`. See the [walkthrough](/walkthrough) for end-to-end examples.
+
+**Kernel-enforced RBAC.** A 4-tier hierarchy (`ROOT → DIRECTOR → MANAGER → STAFF`) is enforced via user-namespace UID mapping at the kernel level, so privilege escalation can't be faked from userspace.
+
+**Ed25519-signed control plane.** Every state-changing command on `ghost-ctl` requires a valid Ed25519 signature. Unsigned commands are rejected before they reach the orchestrator bus.
+
+**Passive eBPF observation (Agent-Alpha).** Agent-Alpha monitors five kernel tracepoints with zero write capability. Tampering with the agent requires kernel-level privileges that the agent itself cannot grant.
+
+**Behavioral profiling and TTP mapping (Agent-Beta).** Agent-Beta profiles process behavior and maps observed activity to MITRE ATT&CK techniques for downstream alerting.
+
+**Immutable audit trail.** All state transitions are written to an append-only SQLite WAL partition. Inspect history at any time with `ghost-ctl audit-trail`.
+
+**Proactive quarantine.** `ghost-ctl dept quarantine <id>` freezes the cgroup, flushes the namespace to drop-all `nftables` policy, captures a memory-map snapshot, and escalates to the orchestrator bus in a single command.
+
+**`ghost-ctl` CLI.** A single binary for the full control plane: `dept spawn`, `dept quarantine`, `dept snapshot`, `hierarchy show`, `audit-trail`, IPAM, and threat-response subcommands.
+
+**Systemd integration.** Drop-in unit files for `ghost-orchestrator`, `ghost-agent-alpha@<dept>`, and `ghost-agent-beta` make production deployment a `systemctl enable` away.
+
+**Live demo dashboard.** A self-contained HTML dashboard ships under `demo/` for live visualization of department state, agent telemetry, and quarantine events.
+
+### Updates
+
+- Application domain is now `xio.cybersurhub.com`. Update any bookmarks or integrations pointing at older hostnames.
+- Continuous integration now runs lint, vet, and race-enabled unit tests on every push and pull request, so released builds get an automated quality gate.
+- Deployment scripts (`deploy.sh`, `firewall_deploy.sh`, `verify_ebpf_env.sh`) ship with the release and verify the eBPF environment before installation.
+
+### Getting started
+
+New to GHOST-STACK CORE? Start with the [verification walkthrough](/walkthrough) — it covers spawning your first department, auditing namespace boundaries, and exercising the quarantine flow end-to-end.
+
+Access requires a signed NDA and Commercial Evaluation Agreement. Contact the maintainer for evaluation access.

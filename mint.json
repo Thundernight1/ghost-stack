@@ -12,6 +12,12 @@
       "pages": [
         "walkthrough"
       ]
+    },
+    {
+      "group": "Changelog",
+      "pages": [
+        "changelog"
+      ]
     }
   ]
 }
