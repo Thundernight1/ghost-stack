@@ -70,9 +70,9 @@ fmt: ## Format all Go code
 ebpf: ## Compile eBPF programs (requires clang + kernel headers)
 	@echo "==> Compiling eBPF programs..."
 	@mkdir -p $(BUILD_DIR)/bpf
-	$(CLANG) $(BPF_FLAGS) -c agents/alpha/alpha.bpf.c -o $(BUILD_DIR)/bpf/alpha.bpf.o || echo "  (alpha.bpf.c — needs vmlinux.h)"
-	$(CLANG) $(BPF_FLAGS) -c firewall/layer2/layer2_tc.bpf.c -o $(BUILD_DIR)/bpf/layer2_tc.bpf.o || echo "  (layer2_tc.bpf.c — needs vmlinux.h)"
-	$(CLANG) $(BPF_FLAGS) -c firewall/layer3/layer3_invisible.bpf.c -o $(BUILD_DIR)/bpf/layer3_invisible.bpf.o || echo "  (layer3_invisible.bpf.c — needs vmlinux.h)"
+	$(CLANG) $(BPF_FLAGS) -c agents/alpha/alpha.bpf.c -o $(BUILD_DIR)/bpf/alpha.bpf.o
+	$(CLANG) $(BPF_FLAGS) -c firewall/layer2/layer2_tc.bpf.c -o $(BUILD_DIR)/bpf/layer2_tc.bpf.o
+	$(CLANG) $(BPF_FLAGS) -c firewall/layer3/layer3_invisible.bpf.c -o $(BUILD_DIR)/bpf/layer3_invisible.bpf.o
 	@echo "==> eBPF objects: $(BUILD_DIR)/bpf/"
 
 # ─────────────────────────────────────────────────

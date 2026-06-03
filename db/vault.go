@@ -578,6 +578,14 @@ func (kv *KeyVault) encryptKey(plainKey []byte) ([]byte, error) {
 // createLUKS2VolumeWithKeyFile creates a LUKS2 volume using a tmpfs key file.
 // The key file path points to /dev/shm — RAM only, never persistent disk.
 func createLUKS2VolumeWithKeyFile(volumePath, keyFilePath string) error {
+	// Pre-flight: cryptsetup is required to format the LUKS2 header. Fail
+	// fast with an actionable message rather than the cryptic
+	// "LUKS format: exec: \"cryptsetup\": executable file not found" that
+	// would otherwise surface mid-spawn.
+	if _, err := exec.LookPath("cryptsetup"); err != nil {
+		return fmt.Errorf("ghost-stack/vault: required host tool 'cryptsetup' not found in $PATH: %w — install with: apt-get install cryptsetup  /  dnf install cryptsetup  /  pacman -S cryptsetup", err)
+	}
+
 	// Create sparse file for the volume.
 	createCmd := exec.Command("fallocate", "-l", LUKSVolumeSize, volumePath)
 	if err := createCmd.Run(); err != nil {
@@ -606,6 +614,11 @@ func createLUKS2VolumeWithKeyFile(volumePath, keyFilePath string) error {
 
 // openLUKS2VolumeWithKeyFile opens a LUKS2 volume using a tmpfs key file.
 func openLUKS2VolumeWithKeyFile(volumePath, dmName, keyFilePath string) error {
+	// Pre-flight: see createLUKS2VolumeWithKeyFile for rationale.
+	if _, err := exec.LookPath("cryptsetup"); err != nil {
+		return fmt.Errorf("ghost-stack/vault: required host tool 'cryptsetup' not found in $PATH: %w — install with: apt-get install cryptsetup  /  dnf install cryptsetup  /  pacman -S cryptsetup", err)
+	}
+
 	cmd := exec.Command("cryptsetup", "open",
 		"--type", "luks2",
 		"--key-file", keyFilePath,

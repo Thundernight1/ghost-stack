@@ -4,6 +4,7 @@
 //
 //	ghost-ctl dept spawn     — Spawn a new department container
 //	ghost-ctl dept quarantine — Quarantine a running department
+//	ghost-ctl dept unquarantine — Reverse a prior quarantine
 //	ghost-ctl dept snapshot  — Capture department state snapshot
 //	ghost-ctl dept status    — Show department container status
 //	ghost-ctl hierarchy show — Display the department hierarchy tree
@@ -89,6 +90,14 @@ func main() {
 
 	cmd := os.Args[1]
 
+	// Top-level help interception. `ghost-ctl --help` / `-h` print the
+	// general usage; subcommand forms like `ghost-ctl dept spawn --help`
+	// are handled inside their respective subcommand dispatchers.
+	if cmd == "--help" || cmd == "-h" {
+		printUsage()
+		return
+	}
+
 	// Initialize subsystems unless it's a version or help command.
 	if cmd != "version" && cmd != "help" && cmd != "--help" && cmd != "-h" {
 		if err := initialize(); err != nil {
@@ -104,11 +113,18 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
+		// Subcommand-level help interception.
+		if os.Args[2] == "--help" || os.Args[2] == "-h" {
+			printUsage()
+			return
+		}
 		switch os.Args[2] {
 		case "spawn":
 			cmdDeptSpawn()
 		case "quarantine":
 			cmdDeptQuarantine()
+		case "unquarantine":
+			cmdDeptUnquarantine()
 		case "snapshot":
 			cmdDeptSnapshot()
 		case "status":
@@ -223,6 +239,17 @@ func initialize() error {
 				AgentBinaryPath: "/opt/ghost-stack/bin/agent-alpha",
 			}
 			deptManager.RegisterRecoveredContainer(cfg, dept.PID, dept.CgroupPath, dept.CreatedAt)
+
+			// Re-populate the in-memory hierarchy tree from the persisted
+			// state. Without this, a subsequent `dept spawn` of a child
+			// fails with "parent department N not found" because the tree
+			// is empty in a fresh ghost-ctl process. ListDepartments orders
+			// by dept_id, so ROOT (id=0) is recovered before its children
+			// and parent lookups succeed.
+			tier = parseTier(dept.Tier)
+			if _, regErr := hierarchyTree.RegisterDepartment(dept.DeptID, dept.DeptName, tier, dept.ParentDeptID); regErr != nil {
+				fmt.Fprintf(os.Stderr, "ghost-ctl: warning: hierarchy recovery skipped dept-%d: %v\n", dept.DeptID, regErr)
+			}
 		}
 	}
 
@@ -266,9 +293,18 @@ type stateDB = sql.DB
 // --- Command implementations ---
 
 func cmdDeptSpawn() {
+	// Per-subcommand help: if --help / -h appears anywhere in the args
+	// (typical forms: `ghost-ctl dept spawn --help` or `--help` as the
+	// first arg after `spawn`), print the targeted usage and exit cleanly.
+	for _, a := range os.Args {
+		if a == "--help" || a == "-h" {
+			printSpawnUsage()
+			return
+		}
+	}
+
 	if len(os.Args) < 6 {
-		fmt.Println("Usage: ghost-ctl dept spawn <DEPT_ID> <NAME> <TIER>")
-		fmt.Println("  TIER: ROOT | DIRECTOR | MANAGER | STAFF")
+		printSpawnUsage()
 		os.Exit(1)
 	}
 
@@ -436,6 +472,38 @@ func cmdDeptQuarantine() {
 	fmt.Printf("[GHOST-CTL] ✓ Department %d quarantined — all processes frozen, network dropped\n", deptID)
 }
 
+func cmdDeptUnquarantine() {
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: ghost-ctl dept unquarantine <DEPT_ID>")
+		os.Exit(1)
+	}
+
+	deptID, err := strconv.Atoi(os.Args[3])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ghost-ctl: invalid dept ID: %s\n", os.Args[3])
+		os.Exit(1)
+	}
+
+	fmt.Printf("[GHOST-CTL] ⚠ UNQUARANTINING department %d...\n", deptID)
+	fmt.Printf("  Step 1: Thawing cgroup (cgroup.freeze = 0)\n")
+	fmt.Printf("  Step 2: Removing drop-all nftables rules\n\n")
+
+	if err := deptManager.UnquarantineDepartment(deptID); err != nil {
+		fmt.Fprintf(os.Stderr, "ghost-ctl: unquarantine failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	appendAudit(AuditEntry{
+		Timestamp: time.Now(),
+		Action:    "DEPT_UNQUARANTINE",
+		Actor:     "ghost-ctl",
+		DeptID:    deptID,
+		Result:    "SUCCESS",
+	})
+
+	fmt.Printf("[GHOST-CTL] ✓ Department %d unquarantined — processes resumed, network restored\n", deptID)
+}
+
 func cmdDeptSnapshot() {
 	if len(os.Args) < 4 {
 		fmt.Println("Usage: ghost-ctl dept snapshot <DEPT_ID>")
@@ -555,6 +623,7 @@ Usage: ghost-ctl <command> [args]
 Commands:
   dept spawn <ID> <NAME> <TIER> [PARENT_ID]   Spawn a department container
   dept quarantine <ID>                          Quarantine a running dept (freeze+drop)
+  dept unquarantine <ID>                        Reverse a prior quarantine (thaw+restore net)
   dept snapshot <ID>                            Capture department state snapshot
   dept status <ID>                              Show department status
   hierarchy show                                Display hierarchy tree
@@ -570,7 +639,37 @@ Examples:
   ghost-ctl dept spawn 10 "Backend Team" MANAGER 1
   ghost-ctl dept spawn 100 "dev-alice" STAFF 10
   ghost-ctl dept quarantine 100
+  ghost-ctl dept unquarantine 100
   ghost-ctl hierarchy show`)
+}
+
+// printSpawnUsage prints the targeted usage for the `dept spawn` subcommand,
+// documenting the required ID, NAME, and TIER positional arguments. Shown
+// by `ghost-ctl dept spawn --help` (or `-h`) and by the missing-arg path.
+func printSpawnUsage() {
+	fmt.Println("Usage: ghost-ctl dept spawn <DEPT_ID> <NAME> <TIER> [PARENT_ID]")
+	fmt.Println("")
+	fmt.Println("Spawn a new department container with its own cgroup, network,")
+	fmt.Println("mount, PID, UTS, IPC, user, cgroup, and time namespaces.")
+	fmt.Println("")
+	fmt.Println("Arguments:")
+	fmt.Println("  DEPT_ID    Unique numeric ID for the department (0-99).")
+	fmt.Println("             0 is typically the ROOT department.")
+	fmt.Println("  NAME       Human-readable name; must match ^[a-zA-Z0-9_-]+$")
+	fmt.Println("             (letters, digits, underscore, hyphen; no spaces).")
+	fmt.Println("  TIER       Hierarchy tier — one of:")
+	fmt.Println("               ROOT     (top of the hierarchy, parent_id = -1)")
+	fmt.Println("               DIRECTOR (must have a ROOT or DIRECTOR parent)")
+	fmt.Println("               MANAGER  (must have a DIRECTOR or MANAGER parent)")
+	fmt.Println("               STAFF    (must have a MANAGER or STAFF parent)")
+	fmt.Println("  PARENT_ID  Optional parent department ID. Required unless TIER")
+	fmt.Println("             is ROOT. Defaults to -1 (no parent) for ROOT.")
+	fmt.Println("")
+	fmt.Println("Examples:")
+	fmt.Println("  ghost-ctl dept spawn 0 \"Headquarters\" ROOT")
+	fmt.Println("  ghost-ctl dept spawn 1 \"Engineering\" DIRECTOR 0")
+	fmt.Println("  ghost-ctl dept spawn 10 \"Backend Team\" MANAGER 1")
+	fmt.Println("  ghost-ctl dept spawn 100 \"dev-alice\" STAFF 10")
 }
 
 func parseTier(s string) hierarchy.Tier {
