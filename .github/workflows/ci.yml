@@ -26,6 +26,20 @@ jobs:
 
       - name: 1. eBPF Compile Check
         run: |
+          # Generate kernel BTF header on-the-fly for the CI runner's
+          # running kernel so that the agent BPF C compiles.
+          if command -v bpftool >/dev/null 2>&1; then
+            bpftool btf dump file /sys/kernel/btf/vmlinux format c > agents/alpha/vmlinux.h
+          else
+            sudo apt-get install -y linux-tools-common linux-tools-generic bpftool 2>/dev/null || true
+            if command -v bpftool >/dev/null 2>&1; then
+              bpftool btf dump file /sys/kernel/btf/vmlinux format c > agents/alpha/vmlinux.h
+            else
+              # If bpftool is still unavailable, install from source or skip
+              echo "bpftool unavailable; eBPF compile step cannot proceed without vmlinux.h"
+              exit 1
+            fi
+          fi
           make ebpf
 
       - name: 2. Lint & Vet
