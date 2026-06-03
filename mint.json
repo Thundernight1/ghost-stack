@@ -12,6 +12,20 @@
       "pages": [
         "walkthrough"
       ]
+    },
+    {
+      "group": "Operations",
+      "pages": [
+        "operations/daemon",
+        "operations/threat-response"
+      ]
+    },
+    {
+      "group": "Agents",
+      "pages": [
+        "agents/alpha",
+        "agents/beta"
+      ]
     }
   ]
 }
