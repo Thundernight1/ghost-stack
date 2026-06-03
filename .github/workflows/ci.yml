@@ -30,16 +30,17 @@ jobs:
 
       - name: 1. eBPF Compile Check
         run: |
+          set +e
           # Generate kernel BTF header on-the-fly for the CI runner's
           # running kernel so that the agent BPF C compiles.
-          if command -v bpftool >/dev/null 2>&1; then
-            bpftool btf dump file /sys/kernel/btf/vmlinux format c > agents/alpha/vmlinux.h
+          bpftool_output=$(bpftool btf dump file /sys/kernel/btf/vmlinux format c 2>&1)
+          bpftool_exit=$?
+          if [ $bpftool_exit -eq 0 ]; then
+            echo "$bpftool_output" > agents/alpha/vmlinux.h
             make ebpf
           else
-            echo "[!] bpftool not available — eBPF compile skipped in CI environment"
-            echo "    This step requires linux-tools-$(uname -r) which may not be"
-            echo "    packaged for the GitHub Actions runner kernel."
-            # Continue pipeline; downstream Go compilation still exercises the core.
+            echo "[!] bpftool not functional in this CI environment — eBPF compile step skipped"
+            echo "    Output: $bpftool_output"
           fi
 
       - name: 2. Lint & Vet
