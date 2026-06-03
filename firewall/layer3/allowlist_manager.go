@@ -83,7 +83,7 @@ type AllowlistManager struct {
 
 	// In-memory state — never persisted to disk.
 	entries map[string]*AllowlistEntry // CIDR → entry
-	nonces  map[string]bool           // Replay protection.
+	nonces  map[string]bool            // Replay protection.
 
 	// Interface name.
 	ifaceName string
@@ -458,8 +458,10 @@ func (am *AllowlistManager) Detach() error {
 func SignUpdate(privateKey ed25519.PrivateKey, action string, entries []AllowlistEntry) (*AllowlistUpdate, error) {
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
-		// Fallback: use timestamp-based nonce.
-		binary.BigEndian.PutUint64(nonce, uint64(time.Now().UnixNano()))
+		// rand.Read failure is unrecoverable for a cryptographic nonce —
+		// fall back to a deterministic source would destroy replay
+		// protection. Abort hard.
+		return nil, fmt.Errorf("layer3: rand.Read nonce failed: %w", err)
 	}
 
 	update := &AllowlistUpdate{

@@ -1,12 +1,13 @@
 // GHOST-STACK CORE — ghost-ctl: Orchestrator Control Plane
 //
 // Commands:
-//   ghost-ctl dept spawn     — Spawn a new department container
-//   ghost-ctl dept quarantine — Quarantine a running department
-//   ghost-ctl dept snapshot  — Capture department state snapshot
-//   ghost-ctl dept status    — Show department container status
-//   ghost-ctl hierarchy show — Display the department hierarchy tree
-//   ghost-ctl audit-trail    — View the append-only audit trail
+//
+//	ghost-ctl dept spawn     — Spawn a new department container
+//	ghost-ctl dept quarantine — Quarantine a running department
+//	ghost-ctl dept snapshot  — Capture department state snapshot
+//	ghost-ctl dept status    — Show department container status
+//	ghost-ctl hierarchy show — Display the department hierarchy tree
+//	ghost-ctl audit-trail    — View the append-only audit trail
 //
 // All orchestrator actions are append-only logged to an immutable
 // partition (separate from container storage).
@@ -19,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -31,8 +33,8 @@ import (
 )
 
 const (
-	version     = "1.0.0"
-	banner      = `
+	version = "1.0.0"
+	banner  = `
  ██████╗ ██╗  ██╗ ██████╗ ███████╗████████╗     ███████╗████████╗ █████╗  ██████╗██╗  ██╗
 ██╔════╝ ██║  ██║██╔═══██╗██╔════╝╚══██╔══╝     ██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
 ██║  ███╗███████║██║   ██║███████╗   ██║  █████╗ ███████╗   ██║   ███████║██║     █████╔╝
@@ -42,10 +44,15 @@ const (
     Enterprise Container Orchestration — Raw Kernel Primitives
                        v%s — CORE
 `
-	auditLogPath  = "/var/lib/ghost-stack/audit/audit.log"
-	basePath      = "/var/lib/ghost-stack"
-	configPath    = "/etc/ghost-stack/config.json"
+	auditLogPath = "/var/lib/ghost-stack/audit/audit.log"
+	basePath     = "/var/lib/ghost-stack"
+	configPath   = "/etc/ghost-stack/config.json"
 )
+
+// deptNamePattern restricts department names to a safe subset so they
+// cannot smuggle whitespace, shell metacharacters, or path separators
+// into downstream consumers (audit log, cgroup paths, BPF labels).
+var deptNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // AuditEntry represents an append-only audit log entry.
 type AuditEntry struct {
@@ -59,19 +66,19 @@ type AuditEntry struct {
 
 // Global state.
 var (
-	hierarchyTree   *hierarchy.HierarchyTree
-	deptManager     *namespace.DepartmentManager
+	hierarchyTree *hierarchy.HierarchyTree
+	deptManager   *namespace.DepartmentManager
 
-	keyVault        *db.KeyVault
-	ed25519PubKey   ed25519.PublicKey
-	ed25519PrivKey  ed25519.PrivateKey
+	keyVault       *db.KeyVault
+	ed25519PubKey  ed25519.PublicKey
+	ed25519PrivKey ed25519.PrivateKey
 	// Gap 2: Persistent state across restarts.
-	stateManager    *StateManager
+	stateManager *StateManager
 	// Gap 3: IP address management to prevent collisions.
-	ipam            *IPAM
+	ipam *IPAM
 	// Gap 5: Proactive threat response (AGENT-BETA → L3 XDP auto-block).
-	threatHandler   *ThreatResponseHandler
-	l3Manager       *layer3.AllowlistManager
+	threatHandler *ThreatResponseHandler
+	l3Manager     *layer3.AllowlistManager
 )
 
 func main() {
@@ -160,43 +167,62 @@ func initialize() error {
 		return fmt.Errorf("key vault: %w", err)
 	}
 
-	// Generate Ed25519 keypair for Layer 3 allowlist signing.
-	ed25519PubKey, ed25519PrivKey, err = ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return fmt.Errorf("ed25519: %w", err)
+	// Load or generate the Ed25519 orchestrator keypair. The private key is
+	// persisted to /etc/ghost-stack/orchestrator.ed25519 with 0600 root-only
+	// permissions so that allowlist signatures remain stable across restarts.
+	ed25519KeyPath := "/etc/ghost-stack/orchestrator.ed25519"
+	if data, readErr := os.ReadFile(ed25519KeyPath); readErr == nil {
+		if len(data) != ed25519.PrivateKeySize {
+			fmt.Fprintf(os.Stderr, "ghost-ctl: %s has invalid size (got %d, want %d)\n", ed25519KeyPath, len(data), ed25519.PrivateKeySize)
+			os.Exit(1)
+		}
+		ed25519PrivKey = ed25519.PrivateKey(data)
+		ed25519PubKey = ed25519PrivKey.Public().(ed25519.PublicKey)
+	} else {
+		pub, priv, genErr := ed25519.GenerateKey(rand.Reader)
+		if genErr != nil {
+			return fmt.Errorf("ed25519 generate: %w", genErr)
+		}
+		if mkdirErr := os.MkdirAll("/etc/ghost-stack", 0o700); mkdirErr != nil {
+			return fmt.Errorf("ed25519: mkdir %s: %w", "/etc/ghost-stack", mkdirErr)
+		}
+		if writeErr := os.WriteFile(ed25519KeyPath, priv, 0o600); writeErr != nil {
+			return fmt.Errorf("ed25519: write %s: %w", ed25519KeyPath, writeErr)
+		}
+		ed25519PubKey = pub
+		ed25519PrivKey = priv
 	}
 
 	// --- Gap 2: Initialize persistent state manager ---
 	stateManager, err = NewStateManager()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-ctl: state manager init warning: %v\n", err)
-		// Non-fatal — orchestrator can run without persistence.
-	} else {
-		// Recover departments that were running before restart.
-		aliveDepts, recoverErr := stateManager.RecoverRunningDepartments()
-		if recoverErr == nil && len(aliveDepts) > 0 {
-			fmt.Printf("[GHOST-CTL] Recovered %d running departments from previous session\n", len(aliveDepts))
-			for _, dept := range aliveDepts {
-				fmt.Printf("  ✓ dept-%d (%s) PID=%d subnet=%s\n",
-					dept.DeptID, dept.DeptName, dept.PID, dept.SubnetCIDR)
-				
-				tier := parseTier(dept.Tier)
-				limits := namespace.DefaultCgroupLimits(tier)
-				cfg := namespace.ContainerConfig{
-					DeptID:          dept.DeptID,
-					DeptName:        dept.DeptName,
-					Tier:            tier,
-					RootFS:          dept.RootFS,
-					Hostname:        fmt.Sprintf("ghost-dept-%d", dept.DeptID),
-					Limits:          limits,
-					SubnetCIDR:      dept.SubnetCIDR,
-					ContainerIP:     dept.ContainerIP,
-					GatewayIP:       dept.GatewayIP,
-					AlertSocketPath: "/var/run/ghost-stack/alert.sock",
-					AgentBinaryPath: "/opt/ghost-stack/bin/agent-alpha",
-				}
-				deptManager.RegisterRecoveredContainer(cfg, dept.PID, dept.CgroupPath, dept.CreatedAt)
+		fmt.Fprintf(os.Stderr, "ghost-ctl: state manager init failed: %v\n", err)
+		os.Exit(1)
+	}
+	// Recover departments that were running before restart.
+	aliveDepts, recoverErr := stateManager.RecoverRunningDepartments()
+	if recoverErr == nil && len(aliveDepts) > 0 {
+		fmt.Printf("[GHOST-CTL] Recovered %d running departments from previous session\n", len(aliveDepts))
+		for _, dept := range aliveDepts {
+			fmt.Printf("  ✓ dept-%d (%s) PID=%d subnet=%s\n",
+				dept.DeptID, dept.DeptName, dept.PID, dept.SubnetCIDR)
+
+			tier := parseTier(dept.Tier)
+			limits := namespace.DefaultCgroupLimits(tier)
+			cfg := namespace.ContainerConfig{
+				DeptID:          dept.DeptID,
+				DeptName:        dept.DeptName,
+				Tier:            tier,
+				RootFS:          dept.RootFS,
+				Hostname:        fmt.Sprintf("ghost-dept-%d", dept.DeptID),
+				Limits:          limits,
+				SubnetCIDR:      dept.SubnetCIDR,
+				ContainerIP:     dept.ContainerIP,
+				GatewayIP:       dept.GatewayIP,
+				AlertSocketPath: "/var/run/ghost-stack/alert.sock",
+				AgentBinaryPath: "/opt/ghost-stack/bin/agent-alpha",
 			}
+			deptManager.RegisterRecoveredContainer(cfg, dept.PID, dept.CgroupPath, dept.CreatedAt)
 		}
 	}
 
@@ -227,7 +253,8 @@ func initialize() error {
 
 	// Start the threat response listener (non-blocking).
 	if err := threatHandler.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-ctl: threat response start warning: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ghost-ctl: threat response start failed: %v\n", err)
+		os.Exit(1)
 	}
 
 	return nil
@@ -252,6 +279,10 @@ func cmdDeptSpawn() {
 	}
 
 	deptName := os.Args[4]
+	if !deptNamePattern.MatchString(deptName) {
+		fmt.Fprintf(os.Stderr, "ghost-ctl: invalid department name %q (must match ^[a-zA-Z0-9_-]+$)\n", deptName)
+		os.Exit(1)
+	}
 	tier := parseTier(os.Args[5])
 
 	fmt.Printf("[GHOST-CTL] Spawning department container...\n")
@@ -348,11 +379,11 @@ func cmdDeptSpawn() {
 		Actor:     "ghost-ctl",
 		DeptID:    deptID,
 		Details: map[string]interface{}{
-			"name":    deptName,
-			"tier":    tier.String(),
-			"pid":     container.PID,
-			"subnet":  subnetCIDR,
-			"ip":      containerIP,
+			"name":   deptName,
+			"tier":   tier.String(),
+			"pid":    container.PID,
+			"subnet": subnetCIDR,
+			"ip":     containerIP,
 		},
 		Result: "SUCCESS",
 	})
