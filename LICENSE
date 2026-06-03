@@ -1,0 +1,282 @@
+GHOST-STACK CORE PROPRIETARY LICENSE
+Version 1.0 — Effective Date: May 16, 2026
+
+Copyright (c) 2026 Mehmet Zumrut. All Rights Reserved.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREAMBLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This License governs the use, reproduction, modification, distribution, and
+commercialization of the software known as "GHOST-STACK CORE," including all
+associated source code, object code, compiled binaries, eBPF programs,
+documentation, configuration files, deployment scripts, and any derivative
+works thereof (collectively, the "Software").
+
+The Software embodies novel technical innovations — including but not limited
+to kernel-level deception firewall architecture, passive eBPF observation
+pipelines, and cryptographically enforced RBAC namespace isolation — which are
+the subject of one or more pending patent applications filed by Mehmet Zumrut
+in the United States Patent and Trademark Office (USPTO) and corresponding
+international jurisdictions.
+
+By accessing, downloading, cloning, forking, compiling, executing, or
+otherwise using the Software in any form, you ("Licensee") agree to be bound
+by all terms and conditions of this License. If you do not agree, you must
+immediately cease all use and destroy all copies of the Software in your
+possession.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 1 — GRANT OF LIMITED RIGHTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Subject to full compliance with this License, the Licensor grants the Licensee
+a limited, non-exclusive, non-transferable, non-sublicensable, revocable
+license solely to:
+
+  (a) READ AND EVALUATE: Access and read the source code for personal
+      educational, security research, or academic evaluation purposes only.
+
+  (b) COMPILE AND RUN (Non-Commercial): Compile and execute the Software on
+      systems owned or controlled by the Licensee, strictly for:
+        (i)  Personal security research with no commercial component;
+        (ii) Academic research at a recognized institution, with prior written
+             notice to the Licensor;
+        (iii) Evaluation for potential licensing — for a period not to exceed
+              sixty (60) days without entering a separate Commercial License.
+
+  (c) INTERNAL SECURITY TESTING: Use the Software to test the security of
+      infrastructure that the Licensee owns or is explicitly authorized to test
+      in writing, provided that:
+        (i)  The Licensee holds all required legal authorizations;
+        (ii) The Software is not redistributed to any third party.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 2 — RESTRICTIONS (PROHIBITED ACTS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The following acts are EXPRESSLY PROHIBITED without separate written
+authorization executed by the Licensor:
+
+  2.1  REDISTRIBUTION: You may not copy, distribute, publish, transmit,
+       sublicense, sell, rent, lease, or otherwise transfer the Software or
+       any portion thereof to any third party, whether in source, binary,
+       compiled, or any other form.
+
+  2.2  COMMERCIAL USE: You may not incorporate, integrate, embed, bundle, or
+       deploy the Software or any derivative of the Software in any commercial
+       product, SaaS offering, managed security service, consulting deliverable,
+       or revenue-generating activity without a fully executed Commercial
+       License Agreement with the Licensor.
+
+  2.3  DERIVATIVE WORKS FOR DISTRIBUTION: You may not create derivative works
+       of the Software for distribution or public disclosure, including but not
+       limited to forks, ports, wrappers, or reimplementations that reproduce
+       the patented techniques described herein.
+
+  2.4  REVERSE ENGINEERING FOR COMPETITION: You may not reverse engineer,
+       decompile, or disassemble the Software for the purpose of creating a
+       competing product or service, or for filing patent applications that
+       claim priority over or overlap with the innovations embodied herein.
+
+  2.5  PATENT CIRCUMVENTION: You may not file, prosecute, or support any
+       patent application that claims any invention substantially similar to,
+       derived from, or overlapping with the technical innovations described
+       in the Software or in any patent application filed by Mehmet Zumrut,
+       regardless of jurisdiction.
+
+  2.6  REMOVAL OF NOTICES: You may not remove, obscure, alter, or replace any
+       copyright notice, patent notice, trademark notice, or license terms
+       embedded in or accompanying the Software.
+
+  2.7  CLOUD DEPLOYMENT AS A SERVICE: You may not deploy the Software as a
+       hosted, managed, or cloud-based security service accessible to third
+       parties — whether for fee or free — without a Commercial License.
+
+  2.8  GOVERNMENT / DEFENSE USE: Use of the Software by any national
+       government, defense agency, intelligence organization, or military
+       body requires a separate Government Use License Agreement executed
+       with the Licensor.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 3 — INTELLECTUAL PROPERTY AND PATENT RIGHTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3.1  OWNERSHIP: All intellectual property rights in and to the Software,
+     including all copyrights, patents, trade secrets, and trademarks, are
+     and shall remain the exclusive property of Mehmet Zumrut. This License
+     does not convey any ownership interest.
+
+3.2  PATENT PENDING NOTICE: The following technical innovations embodied in
+     the Software are covered by one or more pending patent applications:
+
+       (a) Multi-layer deception firewall architecture combining XDP BPF at
+           NIC driver level, TC eBPF traffic control, nftables decoy network,
+           and LSM audit in a unified, cryptographically signed orchestration
+           pipeline;
+
+       (b) Passive eBPF observation architecture providing zero-write,
+           zero-block kernel-level monitoring via ring buffer event delivery,
+           enforced at BPF verifier level;
+
+       (c) Kernel-level RBAC enforcement via user namespace UID range
+           cryptographic isolation preventing cross-department privilege
+           escalation at the kernel scheduler level;
+
+       (d) Ed25519-signed command bus architecture for immutable orchestrator
+           state management with append-only forensic audit trail;
+
+       (e) Real-time behavioral TTP correlation engine mapping kernel
+           tracepoint event sequences to MITRE ATT&CK identifiers with
+           zero disk I/O requirement.
+
+3.3  PATENT MARKING: Products or services incorporating this Software must
+     include appropriate patent marking referencing the applicable patent
+     numbers once issued, per 35 U.S.C. § 287.
+
+3.4  NO PATENT LICENSE: This License does not grant any license under any
+     patent, patent application, or patent right of the Licensor, except as
+     strictly necessary to exercise the limited rights granted in Article 1.
+     Any act that would constitute infringement of any patent held or applied
+     for by the Licensor requires a separate Patent License Agreement.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 4 — CONTRIBUTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4.1  By submitting any contribution (code, documentation, bug report, design,
+     or suggestion) to the Software via any channel — including pull requests,
+     issues, email, or discussion forums — the contributor:
+
+       (a) Grants the Licensor a perpetual, irrevocable, worldwide, royalty-free
+           license to use, reproduce, modify, distribute, sublicense, and
+           commercialize the contribution, including incorporation into patent
+           applications;
+
+       (b) Represents and warrants that the contribution is the contributor's
+           original work and does not infringe any third-party intellectual
+           property right;
+
+       (c) Assigns and transfers to the Licensor all patent rights, copyrights,
+           and other intellectual property rights in the contribution.
+
+4.2  Contributors do not acquire any ownership interest, revenue share, or
+     license-back rights through contribution.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 5 — THIRD-PARTY COMPONENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5.1  The Software incorporates the following third-party open-source
+     components, which are governed by their respective licenses:
+
+     Component                    License          Usage
+     ─────────────────────────────────────────────────────────────────────────
+     github.com/cilium/ebpf       Apache 2.0       eBPF program loading (Go)
+     github.com/mattn/go-sqlite3  MIT              Vault / audit trail storage
+     golang.org/x/sys             BSD 3-Clause     Linux syscall wrappers
+     golang.org/x/exp             BSD 3-Clause     Experimental Go packages
+     Linux kernel (vmlinux.h)     GPL-2.0          BPF CO-RE type definitions
+
+5.2  This License does not supersede the licenses of those third-party
+     components. The Licensee must comply with all applicable third-party
+     licenses when using or distributing the Software.
+
+5.3  The Licensor's proprietary innovations constitute a separate creative
+     and technical layer above these components and are protected by this
+     License and applicable patent law independently of any open-source
+     component licenses.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 6 — DISCLAIMER OF WARRANTIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE SOFTWARE IS PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, OR SECURITY.
+
+THE LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE ERROR-FREE, THAT
+DEFECTS WILL BE CORRECTED, OR THAT THE SOFTWARE IS FREE OF VIRUSES OR OTHER
+HARMFUL COMPONENTS.
+
+THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH
+THE LICENSEE.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 7 — LIMITATION OF LIABILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING BUT NOT
+LIMITED TO LOSS OF PROFITS, LOSS OF DATA, SYSTEM FAILURE, SECURITY BREACH,
+OR COST OF SUBSTITUTE GOODS OR SERVICES, ARISING OUT OF OR IN CONNECTION
+WITH THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF THE LICENSOR HAS
+BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+THE LICENSOR'S TOTAL CUMULATIVE LIABILITY UNDER THIS LICENSE SHALL NOT EXCEED
+ZERO DOLLARS ($0.00) FOR LICENSEES OPERATING UNDER THE LIMITED FREE USE
+GRANT OF ARTICLE 1.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 8 — TERMINATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8.1  This License and all rights granted hereunder terminate automatically
+     and immediately without notice upon any breach by the Licensee of any
+     term of this License.
+
+8.2  Upon termination, the Licensee must:
+       (a) Immediately cease all use of the Software;
+       (b) Destroy all copies of the Software in the Licensee's possession
+           or control, including cached, compiled, and containerized copies;
+       (c) Delete all derivative works created under this License.
+
+8.3  Sections 3, 6, 7, 9, and 10 survive termination indefinitely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 9 — GOVERNING LAW AND JURISDICTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+9.1  This License shall be governed by and construed in accordance with the
+     laws of the State of Washington, United States of America, without
+     regard to conflict of laws principles.
+
+9.2  Any dispute arising from or relating to this License shall be subject
+     to the exclusive jurisdiction of the federal and state courts located
+     in King County, Washington, USA.
+
+9.3  Patent enforcement actions may additionally be pursued in any
+     jurisdiction where the applicable patents are granted or pending.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ARTICLE 10 — COMMERCIAL LICENSING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Commercial use, OEM integration, government deployment, and custom licensing
+arrangements are available under separate Commercial License Agreements.
+
+For licensing inquiries, contact:
+
+  Licensor: Mehmet Zumrut
+  Location: Seattle, Washington, USA
+  Subject line: "GHOST-STACK CORE — Commercial License Inquiry"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTIRE AGREEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This License constitutes the entire agreement between the parties with respect
+to the subject matter hereof and supersedes all prior or contemporaneous
+understandings, representations, or agreements, whether written or oral,
+relating to the Software.
+
+If any provision of this License is held to be unenforceable, the remaining
+provisions shall continue in full force and effect.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GHOST-STACK CORE PROPRIETARY LICENSE v1.0
+  Copyright (c) 2026 Mehmet Zumrut — All Rights Reserved
+  Patent Pending · Seattle, Washington, USA
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

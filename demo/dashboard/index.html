@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GHOST-STACK CORE — Security Orchestration Control Plane</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #070a13;
+            --bg-surface: rgba(13, 20, 38, 0.45);
+            --border-glow: rgba(0, 240, 255, 0.15);
+            --border-glow-magenta: rgba(255, 0, 110, 0.15);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            
+            --accent-cyan: #00f0ff;
+            --accent-magenta: #ff006e;
+            --accent-green: #00ff88;
+            --accent-amber: #ffbe0b;
+            
+            --font-sans: 'Inter', -apple-system, sans-serif;
+            --font-title: 'Outfit', sans-serif;
+            --font-mono: 'Fira Code', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(0, 240, 255, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(255, 0, 110, 0.05) 0%, transparent 40%);
+            background-attachment: fixed;
+            min-height: 100vh;
+        }
+
+        /* ── Scrollbars ── */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(13, 20, 38, 0.1);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(0, 240, 255, 0.3);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 240, 255, 0.6);
+        }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.25rem 2rem;
+            background: rgba(7, 10, 19, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo-group {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            width: 2.25rem;
+            height: 2.25rem;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-magenta));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-title);
+            font-weight: 800;
+            color: #070a13;
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.4);
+            animation: pulse-glow 3s infinite alternate;
+        }
+
+        @keyframes pulse-glow {
+            0% { box-shadow: 0 0 10px rgba(0, 240, 255, 0.3); }
+            100% { box-shadow: 0 0 20px rgba(255, 0, 110, 0.5); }
+        }
+
+        .logo-text {
+            font-family: var(--font-title);
+            font-weight: 700;
+            font-size: 1.5rem;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, var(--text-primary), #9ca3af);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-badge {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            background: rgba(0, 240, 255, 0.1);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            vertical-align: middle;
+            margin-left: 0.5rem;
+        }
+
+        .header-stats {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            background: rgba(0, 255, 136, 0.08);
+            border: 1px solid rgba(0, 255, 136, 0.2);
+            padding: 0.35rem 0.75rem;
+            border-radius: 20px;
+            color: var(--accent-green);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--accent-green);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--accent-green);
+            animation: blink 1.5s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        .live-clock {
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* ── Grid Layout ── */
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: 3fr 1fr;
+            gap: 1.5rem;
+            padding: 2rem;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .main-column {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .side-column {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        /* ── Glassmorphism Card Base ── */
+        .card {
+            background: var(--bg-surface);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 12px;
+            backdrop-filter: blur(12px);
+            padding: 1.5rem;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .card:hover {
+            border-color: var(--border-glow);
+        }
+
+        .card-cyan::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent-cyan), transparent);
+        }
+
+        .card-magenta::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent-magenta), transparent);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 0.75rem;
+        }
+
+        .card-title {
+            font-family: var(--font-title);
+            font-size: 1.15rem;
+            font-weight: 600;
+            letter-spacing: -0.2px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* ── Firewall Layer Statistics ── */
+        .firewall-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+        }
+
+        .layer-box {
+            background: rgba(7, 10, 19, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+
+        .layer-box:hover {
+            background: rgba(7, 10, 19, 0.5);
+            border-color: rgba(0, 240, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .layer-num {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+            text-transform: uppercase;
+        }
+
+        .layer-name {
+            font-family: var(--font-title);
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .layer-l1 { color: var(--accent-amber); }
+        .layer-l2 { color: var(--accent-green); }
+        .layer-l3 { color: var(--accent-cyan); }
+        .layer-l4 { color: var(--accent-magenta); }
+
+        .layer-counter {
+            font-family: var(--font-mono);
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        /* ── MITRE ATT&CK Map ── */
+        .mitre-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 0.5rem;
+        }
+
+        .mitre-card {
+            background: rgba(7, 10, 19, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+            border-radius: 6px;
+            padding: 0.6rem 0.5rem;
+            font-size: 0.7rem;
+            text-align: center;
+            min-height: 55px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 0.25rem;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .mitre-card .t-id {
+            font-family: var(--font-mono);
+            color: var(--text-muted);
+            font-size: 0.6rem;
+        }
+
+        .mitre-card .t-name {
+            font-weight: 500;
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .mitre-active {
+            border-color: rgba(255, 0, 110, 0.4);
+            box-shadow: inset 0 0 10px rgba(255, 0, 110, 0.15);
+            animation: alert-flash 1s infinite alternate;
+        }
+
+        .mitre-active .t-id { color: var(--accent-magenta); }
+        .mitre-active .t-name { color: var(--text-primary); }
+
+        @keyframes alert-flash {
+            0% { border-color: rgba(255, 0, 110, 0.2); }
+            100% { border-color: rgba(255, 0, 110, 0.8); }
+        }
+
+        /* ── Live Attack Feed ── */
+        .attack-feed {
+            height: 250px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding-right: 0.5rem;
+        }
+
+        .feed-item {
+            background: rgba(7, 10, 19, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+            border-left: 3px solid var(--text-muted);
+            border-radius: 4px;
+            padding: 0.6rem 0.8rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            animation: slide-in 0.25s ease-out;
+        }
+
+        @keyframes slide-in {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .feed-item-crit { border-left-color: var(--accent-magenta); background: rgba(255, 0, 110, 0.03); }
+        .feed-item-warn { border-left-color: var(--accent-amber); background: rgba(255, 190, 11, 0.03); }
+        .feed-item-info { border-left-color: var(--accent-cyan); background: rgba(0, 240, 255, 0.03); }
+
+        .feed-time { color: var(--text-muted); width: 80px; }
+        .feed-msg { flex-grow: 1; margin: 0 1rem; color: var(--text-primary); }
+        .feed-badge {
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+        .badge-crit { background: rgba(255, 0, 110, 0.1); color: var(--accent-magenta); border: 1px solid rgba(255, 0, 110, 0.2); }
+        .badge-warn { background: rgba(255, 190, 11, 0.1); color: var(--accent-amber); border: 1px solid rgba(255, 190, 11, 0.2); }
+        .badge-info { background: rgba(0, 240, 255, 0.1); color: var(--accent-cyan); border: 1px solid rgba(0, 240, 255, 0.2); }
+
+        /* ── threat Actors ── */
+        .actor-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .actor-row {
+            background: rgba(7, 10, 19, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.02);
+            border-radius: 6px;
+            padding: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+
+        .actor-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            font-family: var(--font-mono);
+        }
+
+        .actor-ip {
+            font-weight: 500;
+            color: var(--accent-cyan);
+        }
+
+        .actor-score {
+            font-weight: 700;
+            color: var(--accent-magenta);
+        }
+
+        .actor-bar-bg {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 2px;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .actor-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-magenta));
+            border-radius: 2px;
+            transition: width 0.8s ease;
+        }
+
+        /* ── Department Hierarchy ── */
+        .tree-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            padding: 1rem 0;
+        }
+
+        .tree-node {
+            background: rgba(7, 10, 19, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            padding: 0.5rem 1rem;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            text-align: center;
+            min-width: 140px;
+            position: relative;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.3s ease;
+        }
+
+        .node-active {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+        }
+
+        .node-quarantined {
+            border-color: var(--accent-magenta) !important;
+            box-shadow: 0 0 15px rgba(255, 0, 110, 0.3) !important;
+            animation: node-flash 1s infinite alternate;
+        }
+
+        @keyframes node-flash {
+            0% { box-shadow: 0 0 5px rgba(255, 0, 110, 0.1); }
+            100% { box-shadow: 0 0 18px rgba(255, 0, 110, 0.4); }
+        }
+
+        .node-title {
+            font-weight: 700;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+        }
+
+        .node-meta {
+            font-size: 0.6rem;
+            color: var(--text-muted);
+            margin-top: 0.1rem;
+        }
+
+        .tree-connector {
+            width: 2px;
+            height: 16px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .tree-connector-active {
+            background: var(--accent-cyan);
+        }
+
+        .tree-connector-quarantine {
+            background: var(--accent-magenta);
+            animation: line-pulse 1s infinite;
+        }
+
+        @keyframes line-pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        /* ── XDP Drop Rate Line Chart ── */
+        .chart-wrapper {
+            width: 100%;
+            height: 130px;
+            position: relative;
+            margin-top: 0.5rem;
+        }
+
+        #chartCanvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* ── Network Invisibility Meter ── */
+        .meter-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1.5rem;
+            padding: 0.25rem 0;
+        }
+
+        .meter-circle {
+            width: 70px;
+            height: 70px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .meter-circle svg {
+            width: 100%;
+            height: 100%;
+            transform: rotate(-90deg);
+        }
+
+        .meter-circle circle {
+            fill: none;
+            stroke-width: 6;
+            stroke-linecap: round;
+        }
+
+        .meter-circle .bg-circle {
+            stroke: rgba(255, 255, 255, 0.04);
+        }
+
+        .meter-circle .fill-circle {
+            stroke: url(#cyan-gradient);
+            stroke-dasharray: 220;
+            stroke-dashoffset: 22; /* 90% */
+            transition: stroke-dashoffset 0.8s ease;
+        }
+
+        .meter-text {
+            position: absolute;
+            font-family: var(--font-title);
+            font-weight: 700;
+            font-size: 1.1rem;
+            color: var(--accent-cyan);
+        }
+
+        .meter-info {
+            flex-grow: 1;
+        }
+
+        .meter-label {
+            font-family: var(--font-title);
+            font-weight: 600;
+            font-size: 0.95rem;
+            margin-bottom: 0.2rem;
+        }
+
+        .meter-desc {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            line-height: 1.25;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header>
+        <div class="logo-group">
+            <div class="logo-icon">G</div>
+            <div class="logo-text">GHOST-STACK <span class="logo-badge">CORE v1.0.0</span></div>
+        </div>
+        <div class="header-stats">
+            <div class="status-pill">
+                <div class="status-dot"></div>
+                <span>ACTIVE GUARD</span>
+            </div>
+            <div class="live-clock" id="liveClock">2026-05-24 15:37:33</div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="dashboard-container">
+        
+        <!-- Main Column (Left) -->
+        <div class="main-column">
+            
+            <!-- Firewall Stats -->
+            <div class="card card-cyan">
+                <div class="card-header">
+                    <h2 class="card-title">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        4-LAYER DECEPTION FIREWALL
+                    </h2>
+                    <span style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent-cyan);">eBPF/XDP ENGINE</span>
+                </div>
+                <div class="firewall-grid">
+                    <div class="layer-box">
+                        <div class="layer-num">Layer 1</div>
+                        <div class="layer-name layer-l1">nftables</div>
+                        <div class="layer-counter" id="counterL1">4,912</div>
+                    </div>
+                    <div class="layer-box">
+                        <div class="layer-num">Layer 2</div>
+                        <div class="layer-name layer-l2">TC</div>
+                        <div class="layer-counter" id="counterL2">23,109</div>
+                    </div>
+                    <div class="layer-box">
+                        <div class="layer-num">Layer 3</div>
+                        <div class="layer-name layer-l3">XDP</div>
+                        <div class="layer-counter" id="counterL3">142,881</div>
+                    </div>
+                    <div class="layer-box">
+                        <div class="layer-num">Layer 4</div>
+                        <div class="layer-name layer-l4">AppArmor</div>
+                        <div class="layer-counter" id="counterL4">124</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MITRE ATT&CK Mapping -->
+            <div class="card card-magenta">
+                <div class="card-header">
+                    <h2 class="card-title">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7"/></svg>
+                        MITRE ATT&CK TTP CORRELATION
+                    </h2>
+                    <span style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent-magenta);">REAL-TIME TTP MAP</span>
+                </div>
+                <div class="mitre-grid">
+                    <div class="mitre-card" id="t1046">
+                        <div class="t-id">T1046</div>
+                        <div class="t-name">Network Service Scanning</div>
+                    </div>
+                    <div class="mitre-card" id="t1110">
+                        <div class="t-id">T1110</div>
+                        <div class="t-name">Brute Force</div>
+                    </div>
+                    <div class="mitre-card" id="t1190">
+                        <div class="t-id">T1190</div>
+                        <div class="t-name">Exploit Public-Facing Application</div>
+                    </div>
+                    <div class="mitre-card" id="t1068">
+                        <div class="t-id">T1068</div>
+                        <div class="t-name">Exploitation for Privilege Escalation</div>
+                    </div>
+                    <div class="mitre-card" id="t1210">
+                        <div class="t-id">T1210</div>
+                        <div class="t-name">Exploitation of Remote Services</div>
+                    </div>
+                    <div class="mitre-card" id="t1071">
+                        <div class="t-id">T1071</div>
+                        <div class="t-name">Application Layer Protocol</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Events Feed -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 20h9M3 20v-8a2 2 0 012-2h4M3 12h6M9 20h6M15 20v-3a2 2 0 012-2h4M15 12h6"/></svg>
+                        LIVE AUDIT TRAIL & ORCHESTRATION BUS
+                    </h2>
+                    <span style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted);">APPEND-ONLY LOGS</span>
+                </div>
+                <div class="attack-feed" id="attackFeed">
+                    <!-- Events will populate dynamically -->
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Side Column (Right) -->
+        <div class="side-column">
+            
+            <!-- Network Invisibility Meter -->
+            <div class="card card-cyan">
+                <div class="card-header">
+                    <h2 class="card-title">INVISIBILITY METER</h2>
+                </div>
+                <div class="meter-container">
+                    <div class="meter-circle">
+                        <svg>
+                            <defs>
+                                <linearGradient id="cyan-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#00f0ff"/>
+                                    <stop offset="100%" stop-color="#00ff88"/>
+                                </linearGradient>
+                            </defs>
+                            <circle class="bg-circle" cx="35" cy="35" r="30"/>
+                            <circle class="fill-circle" cx="35" cy="35" r="30" id="meterFill"/>
+                        </svg>
+                        <div class="meter-text" id="meterVal">92%</div>
+                    </div>
+                    <div class="meter-info">
+                        <div class="meter-label">Stealth Factor</div>
+                        <div class="meter-desc">92% of the enterprise attack surface is completely virtualized and invisible to scans.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Department Container Hierarchy -->
+            <div class="card card-magenta">
+                <div class="card-header">
+                    <h2 class="card-title">HIERARCHY BOUNDARIES</h2>
+                </div>
+                <div class="tree-container">
+                    <div class="tree-node node-active" id="nodeRoot">
+                        <div class="node-title">HQ (dept-0)</div>
+                        <div class="node-meta">ROOT • PID 6408</div>
+                    </div>
+                    <div class="tree-connector tree-connector-active" id="con1"></div>
+                    <div class="tree-node" id="nodeDir">
+                        <div class="node-title">ENGINEERING (dept-1)</div>
+                        <div class="node-meta">DIRECTOR • inactive</div>
+                    </div>
+                    <div class="tree-connector" id="con2"></div>
+                    <div class="tree-node" id="nodeMgr">
+                        <div class="node-title">BACKEND (dept-10)</div>
+                        <div class="node-meta">MANAGER • inactive</div>
+                    </div>
+                    <div class="tree-connector" id="con3"></div>
+                    <div class="tree-node" id="nodeStaff">
+                        <div class="node-title">ALICE (dept-100)</div>
+                        <div class="node-meta">STAFF • inactive</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Threat Actor profiles -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">THREAT ACTOR PROFILES</h2>
+                </div>
+                <div class="actor-list" id="actorList">
+                    <!-- Actor rows will populate here -->
+                </div>
+            </div>
+
+            <!-- XDP Drop Rate Line Chart -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">XDP DROP RATE (pkts/sec)</h2>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="chartCanvas"></canvas>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        // Update clock
+        function updateClock() {
+            const clock = document.getElementById('liveClock');
+            const now = new Date();
+            clock.textContent = now.toISOString().replace('T', ' ').substring(0, 19);
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // Animated Counters
+        const counters = {
+            L1: { el: document.getElementById('counterL1'), val: 4912, inc: 1 },
+            L2: { el: document.getElementById('counterL2'), val: 23109, inc: 3 },
+            L3: { el: document.getElementById('counterL3'), val: 142881, inc: 15 },
+            L4: { el: document.getElementById('counterL4'), val: 124, inc: 0 }
+        };
+
+        function animateCounters() {
+            for (const key in counters) {
+                const c = counters[key];
+                if (Math.random() > 0.3) {
+                    c.val += Math.floor(Math.random() * c.inc * 2) + c.inc;
+                    c.el.textContent = c.val.toLocaleString();
+                }
+            }
+        }
+        setInterval(animateCounters, 1500);
+
+        // MITRE ATT&CK Map cycle
+        const mitreIds = ['t1046', 't1110', 't1190', 't1068', 't1210', 't1071'];
+        function cycleMitreMap() {
+            // Remove previous active
+            mitreIds.forEach(id => document.getElementById(id).classList.remove('mitre-active'));
+            
+            // Randomly activate 1-2 techniques
+            const activeCount = Math.floor(Math.random() * 2) + 1;
+            for (let i = 0; i < activeCount; i++) {
+                const randId = mitreIds[Math.floor(Math.random() * mitreIds.length)];
+                document.getElementById(randId).classList.add('mitre-active');
+            }
+        }
+        setInterval(cycleMitreMap, 3000);
+        cycleMitreMap();
+
+        // Canvas Chart
+        const canvas = document.getElementById('chartCanvas');
+        const ctx = canvas.getContext('2d');
+        let chartData = Array(30).fill(0).map(() => Math.floor(Math.random() * 200) + 100);
+
+        // Resize Canvas to parent
+        function resizeCanvas() {
+            canvas.width = canvas.parentElement.clientWidth;
+            canvas.height = canvas.parentElement.clientHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        function drawChart() {
+            if (!ctx) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Shift data and add new
+            chartData.shift();
+            const lastVal = chartData[chartData.length - 1];
+            const change = Math.floor(Math.random() * 60) - 30;
+            const newVal = Math.max(50, Math.min(600, lastVal + change));
+            chartData.push(newVal);
+
+            // Draw line
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#00f0ff';
+            
+            const step = canvas.width / (chartData.length - 1);
+            const maxVal = Math.max(...chartData, 100);
+            
+            chartData.forEach((val, i) => {
+                const x = i * step;
+                const y = canvas.height - (val / maxVal * (canvas.height - 20)) - 10;
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            });
+            ctx.stroke();
+
+            // Gradient fill underneath
+            ctx.lineTo(canvas.width, canvas.height);
+            ctx.lineTo(0, canvas.height);
+            ctx.closePath();
+            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grad.addColorStop(0, 'rgba(0, 240, 255, 0.15)');
+            grad.addColorStop(1, 'rgba(0, 240, 255, 0.0)');
+            ctx.fillStyle = grad;
+            ctx.fill();
+        }
+        setInterval(drawChart, 200);
+
+        // Live Feed and Attack Simulation
+        const ips = ['192.168.1.144', '10.0.4.52', '172.30.0.50', '8.8.8.8'];
+        const tools = ['nmap', 'hydra', 'masscan', 'curl/prober', 'sqlmap', 'custom payload'];
+        const feed = document.getElementById('attackFeed');
+
+        const eventsList = [
+            { msg: "Portscan detected from $IP - probing ports 1-1000", lvl: "warn", badge: "WARNING", type: "L3 XDP Drop" },
+            { msg: "Brute-force SSH attack blocked from $IP on $TOOL", lvl: "info", badge: "AUDIT", type: "L1 iptables" },
+            { msg: "SQL Injection payload detected from $IP inside request parameters", lvl: "warn", badge: "WARNING", type: "L3 XDP Drop" },
+            { msg: "Path traversal attempt blocked on Headquarters: PID $PID", lvl: "crit", badge: "CRITICAL", type: "L4 AppArmor" },
+            { msg: "Deceptive Honeypot target hit from $IP using $TOOL", lvl: "info", badge: "DECEPTION", type: "L2 TC Routing" },
+            { msg: "Credential spray block: 45 authentication events dropped", lvl: "warn", badge: "WARNING", type: "L1 nftables" },
+            { msg: "Alert Escalation: cgroup freeze triggered on Headquarters (dept-0)", lvl: "crit", badge: "QUARANTINE", type: "ORCHESTRATOR" }
+        ];
+
+        function addFeedItem() {
+            const randIP = ips[Math.floor(Math.random() * ips.length)];
+            const randTool = tools[Math.floor(Math.random() * tools.length)];
+            const randEv = {...eventsList[Math.floor(Math.random() * eventsList.length)]};
+            
+            randEv.msg = randEv.msg.replace('$IP', randIP).replace('$TOOL', randTool).replace('$PID', '6408');
+
+            const item = document.createElement('div');
+            item.className = `feed-item feed-item-${randEv.lvl}`;
+            
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'feed-time';
+            const now = new Date();
+            timeSpan.textContent = now.toTimeString().split(' ')[0];
+
+            const msgSpan = document.createElement('span');
+            msgSpan.className = 'feed-msg';
+            msgSpan.textContent = `[${randEv.type}] ${randEv.msg}`;
+
+            const badgeSpan = document.createElement('span');
+            badgeSpan.className = `feed-badge badge-${randEv.lvl}`;
+            badgeSpan.textContent = randEv.badge;
+
+            item.appendChild(timeSpan);
+            item.appendChild(msgSpan);
+            item.appendChild(badgeSpan);
+
+            feed.insertBefore(item, feed.firstChild);
+
+            // Keep list under 30 items
+            if (feed.children.length > 30) {
+                feed.removeChild(feed.lastChild);
+            }
+
+            // Perform interactive quarantine action on critical event!
+            if (randEv.lvl === 'crit' && Math.random() > 0.4) {
+                triggerVisualQuarantine();
+            }
+        }
+        setInterval(addFeedItem, 2000);
+        addFeedItem();
+
+        // Threat Actors
+        const actors = [
+            { ip: '172.30.0.50', score: 94 },
+            { ip: '192.168.1.144', score: 85 },
+            { ip: '10.0.4.52', score: 45 }
+        ];
+
+        const actorListEl = document.getElementById('actorList');
+        function renderActors() {
+            actorListEl.innerHTML = '';
+            actors.forEach(act => {
+                // Fluctuating threat scores
+                const change = Math.floor(Math.random() * 6) - 3;
+                act.score = Math.max(10, Math.min(100, act.score + change));
+
+                const row = document.createElement('div');
+                row.className = 'actor-row';
+
+                const header = document.createElement('div');
+                header.className = 'actor-header';
+                
+                const ipSpan = document.createElement('span');
+                ipSpan.className = 'actor-ip';
+                ipSpan.textContent = `⚡ Adversary IP: ${act.ip}`;
+
+                const scoreSpan = document.createElement('span');
+                scoreSpan.className = 'actor-score';
+                scoreSpan.textContent = `THREAT SCORE: ${act.score}`;
+
+                header.appendChild(ipSpan);
+                header.appendChild(scoreSpan);
+
+                const barBg = document.createElement('div');
+                barBg.className = 'actor-bar-bg';
+
+                const barFill = document.createElement('div');
+                barFill.className = 'actor-bar-fill';
+                barFill.style.width = `${act.score}%`;
+
+                barBg.appendChild(barFill);
+
+                row.appendChild(header);
+                row.appendChild(barBg);
+                actorListEl.appendChild(row);
+            });
+        }
+        setInterval(renderActors, 3000);
+        renderActors();
+
+        // Visual Quarantine simulation
+        const nodes = {
+            root: document.getElementById('nodeRoot'),
+            dir: document.getElementById('nodeDir'),
+            mgr: document.getElementById('nodeMgr'),
+            staff: document.getElementById('nodeStaff')
+        };
+        const connectors = {
+            con1: document.getElementById('con1'),
+            con2: document.getElementById('con2'),
+            con3: document.getElementById('con3')
+        };
+
+        function triggerVisualQuarantine() {
+            // Quarantine root node visually
+            nodes.root.classList.add('node-quarantined');
+            nodes.root.querySelector('.node-meta').textContent = 'FROZEN • QUARANTINED';
+            
+            // Connectors glow red
+            connectors.con1.className = 'tree-connector tree-connector-quarantine';
+
+            // Log event to feed
+            const item = document.createElement('div');
+            item.className = 'feed-item feed-item-crit';
+            const now = new Date();
+            item.innerHTML = `<span class="feed-time">${now.toTimeString().split(' ')[0]}</span><span class="feed-msg">[ORCHESTRATOR] Container Headquarters (dept-0) quarantined: all sockets dropped.</span><span class="feed-badge badge-crit">SECURED</span>`;
+            feed.insertBefore(item, feed.firstChild);
+
+            // After 6 seconds, restore back to active status
+            setTimeout(() => {
+                nodes.root.classList.remove('node-quarantined');
+                nodes.root.querySelector('.node-meta').textContent = 'ROOT • PID 6408';
+                connectors.con1.className = 'tree-connector tree-connector-active';
+            }, 6000);
+        }
+    </script>
+</body>
+</html>

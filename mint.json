@@ -1,0 +1,17 @@
+{
+  "name": "GHOST-STACK CORE",
+  "favicon": "/favicon.png",
+  "colors": {
+    "primary": "#0D9373",
+    "light": "#0FBA8F",
+    "dark": "#0B735A"
+  },
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": [
+        "walkthrough"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+# GHOST-STACK CORE — AGENT-ALPHA Template Service
+# One instance per department container.
+# Usage: systemctl start ghost-agent-alpha@<DEPT_ID>.service
+#
+# Template instance: %i = DEPT_ID
+
+[Unit]
+Description=GHOST-STACK AGENT-ALPHA Observer (dept-%i)
+Documentation=https://ghost-stack.internal/docs/agent-alpha
+After=ghost-orchestrator.service
+BindsTo=ghost-orchestrator.service
+PartOf=ghost-orchestrator.service
+
+[Service]
+Type=simple
+ExecStart=/opt/ghost-stack/bin/agent-alpha \
+    --dept-id=%i \
+    --bpf-object=/opt/ghost-stack/bpf/alpha.bpf.o \
+    --alert-socket=/var/run/ghost-stack/alert.sock
+Restart=on-failure
+RestartSec=3
+
+# AGENT-ALPHA runs with MINIMAL capabilities:
+# ONLY CAP_BPF + CAP_PERFMON — nothing else.
+User=ghost-agent
+Group=ghost-agent
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+
+# ONLY these two capabilities — agent is strictly passive.
+AmbientCapabilities=CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+
+# Restrict file access.
+ReadOnlyPaths=/
+ReadWritePaths=/var/run/ghost-stack/alert.sock
+InaccessiblePaths=/home /root /var/lib/ghost-stack/vault
+
+# Restrict network access (agent doesn't need network).
+RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=no
+
+# Logging via Unix socket only — no journal/syslog.
+StandardOutput=null
+StandardError=journal
+SyslogIdentifier=ghost-agent-alpha@%i
+
+# Resource limits for the agent.
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=16
+
+[Install]
+WantedBy=ghost-orchestrator.service
