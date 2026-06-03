@@ -2,7 +2,7 @@
 # GHOST-STACK CORE — Makefile
 # ═══════════════════════════════════════════════════════════
 
-.PHONY: all build test lint clean ebpf help
+.PHONY: all build build-ctl build-agents install test lint clean ebpf help
 
 BINARY     := ghost-ctl
 BUILD_DIR  := build
@@ -23,11 +23,36 @@ all: lint test build  ## Run lint, tests, and build
 # ─────────────────────────────────────────────────
 # Build
 # ─────────────────────────────────────────────────
-build: ## Build ghost-ctl binary
+build: build-ctl build-agents  ## Build all binaries
+
+build-ctl: ## Build ghost-ctl binary
 	@echo "==> Building $(BINARY)..."
 	@mkdir -p $(BUILD_DIR)
 	$(CGO) $(GO) build -o $(BUILD_DIR)/$(BINARY) -ldflags="$(LDFLAGS)" ./cmd/ghost-ctl/
 	@echo "==> Built: $(BUILD_DIR)/$(BINARY)"
+
+build-agents: ## Build agent binaries
+	@echo "==> Building agent-alpha..."
+	$(GO) build -o $(BUILD_DIR)/agent-alpha -ldflags="$(LDFLAGS)" ./cmd/agent-alpha/
+	@echo "==> Building agent-beta..."
+	$(GO) build -o $(BUILD_DIR)/agent-beta -ldflags="$(LDFLAGS)" ./cmd/agent-beta/
+	@echo "==> Built agents in $(BUILD_DIR)/"
+
+# ─────────────────────────────────────────────────
+# Install (requires root for /opt)
+# ─────────────────────────────────────────────────
+install: build ebpf ## Install binaries + BPF objects to /opt/ghost-stack
+	@echo "==> Installing to /opt/ghost-stack..."
+	@mkdir -p /opt/ghost-stack/bin /opt/ghost-stack/bpf /etc/ghost-stack
+	@cp $(BUILD_DIR)/$(BINARY) /opt/ghost-stack/bin/
+	@cp $(BUILD_DIR)/agent-alpha /opt/ghost-stack/bin/
+	@cp $(BUILD_DIR)/agent-beta  /opt/ghost-stack/bin/
+	@cp $(BUILD_DIR)/bpf/*.o      /opt/ghost-stack/bpf/   2>/dev/null || true
+	@chmod 755 /opt/ghost-stack/bin/*
+	@echo "==> Installed to /opt/ghost-stack/"
+	@echo "    Binaries: /opt/ghost-stack/bin/"
+	@echo "    BPF     : /opt/ghost-stack/bpf/"
+	@echo "    Config  : /etc/ghost-stack/"
 
 # ─────────────────────────────────────────────────
 # Test

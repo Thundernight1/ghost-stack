@@ -20,10 +20,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ghost-stack/core/auth"
@@ -43,8 +47,13 @@ const (
 ╚██████╔╝██║  ██║╚██████╔╝███████║   ██║         ███████║   ██║   ██║  ██║╚██████╗██║  ██╗
  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝         ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
     Enterprise Container Orchestration — Raw Kernel Primitives
-                       v%s — CORE
-`
+                       v%s — CORE`
+)
+
+// On-disk paths used by the orchestrator. These are package-level vars
+// (not consts) so tests in this package can redirect them at t.TempDir()
+// to avoid touching the host filesystem.
+var (
 	auditLogPath = "/var/lib/ghost-stack/audit/audit.log"
 	basePath     = "/var/lib/ghost-stack"
 	configPath   = "/etc/ghost-stack/config.json"
@@ -98,8 +107,12 @@ func main() {
 		return
 	}
 
-	// Initialize subsystems unless it's a version or help command.
-	if cmd != "version" && cmd != "help" && cmd != "--help" && cmd != "-h" {
+	// Initialize subsystems unless it's a no-init command. self-check
+	// is a preflight (systemd's ExecStartPre=) and must not open the
+	// alert socket or start the threat handler — that's the daemon's
+	// job. --help interception is already handled above and would have
+	// exited, so "help" here is just for completeness.
+	if cmd != "version" && cmd != "help" && cmd != "--help" && cmd != "-h" && cmd != "self-check" {
 		if err := initialize(); err != nil {
 			fmt.Fprintf(os.Stderr, "ghost-ctl: initialization failed: %v\n", err)
 			os.Exit(1)
@@ -143,6 +156,14 @@ func main() {
 
 	case "audit-trail":
 		cmdAuditTrail()
+
+	case "self-check":
+		// systemd ExecStartPre=: exit fast with a clear code (see
+		// cmdSelfCheck contract for code meanings).
+		os.Exit(cmdSelfCheck())
+
+	case "daemon":
+		cmdDaemon()
 
 	case "version":
 		fmt.Printf("ghost-ctl v%s\n", version)
@@ -670,6 +691,151 @@ func printSpawnUsage() {
 	fmt.Println("  ghost-ctl dept spawn 1 \"Engineering\" DIRECTOR 0")
 	fmt.Println("  ghost-ctl dept spawn 10 \"Backend Team\" MANAGER 1")
 	fmt.Println("  ghost-ctl dept spawn 100 \"dev-alice\" STAFF 10")
+}
+
+// cmdSelfCheck runs a preflight check before systemd starts the
+// daemon. It is designed to be called as ExecStartPre= in the
+// ghost-orchestrator.service unit. Returns 0 on success, 1-9 for
+// specific failure modes so systemd units can use OnFailure=
+// triggers or logging with deterministic exit codes.
+func cmdSelfCheck() int {
+	fmt.Fprintln(os.Stderr, "ghost-ctl: self-check: verifying preconditions...")
+
+	// 1. Base path must exist and be writable.
+	if info, err := os.Stat(basePath); err != nil || !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "self-check: base path %s is missing or not a directory: %v — create with: mkdir -p %s\n", basePath, err, basePath)
+		return 1
+	}
+	if f, err := os.CreateTemp(basePath, ".ghost-ctl-write-test-*"); err != nil {
+		fmt.Fprintf(os.Stderr, "self-check: base path %s is not writable: %v\n", basePath, err)
+		return 2
+	} else {
+		f.Close()
+		os.Remove(f.Name())
+	}
+
+	// 2. Alert socket directory must exist (the daemon creates the
+	// socket itself, but the parent dir must be there).
+	if err := os.MkdirAll("/var/run/ghost-stack", 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "self-check: cannot create /var/run/ghost-stack: %v\n", err)
+		return 3
+	}
+
+	// 3. BPF object directory (only if the host is already set up to
+	// compile eBPF; don't fail if the directory is absent because the
+	// deploy script creates it).
+	bpfDir := "/opt/ghost-stack/bpf"
+	if _, err := os.Stat(bpfDir); err == nil {
+		if info, err := os.Stat(bpfDir); err != nil || !info.IsDir() {
+			fmt.Fprintf(os.Stderr, "self-check: %s is not a directory: %v\n", bpfDir, err)
+			return 4
+		}
+	}
+
+	// 4. Agent binaries present (if the service units reference them).
+	for _, agent := range []string{"agent-alpha", "agent-beta"} {
+		path := "/opt/ghost-stack/bin/" + agent
+		if _, err := os.Stat(path); err != nil {
+			fmt.Fprintf(os.Stderr, "self-check: agent binary missing: %s (will be built by `make install`)\n", path)
+		}
+	}
+
+	// 5. Kernel capabilities (CAP_BPF is Linux ≥ 5.8).
+	// We can't test for CAP_BPF from unprivileged shell, but we can
+	// check /proc/sys/kernel/bpf_stats_enabled exists.
+	if _, err := os.Stat("/proc/sys/kernel/bpf_stats_enabled"); err != nil {
+		fmt.Fprintf(os.Stderr, "self-check: BPF sysctl absent — kernel may be too old for eBPF (need >= 5.8)\n")
+		return 5
+	}
+
+	// 6. Host tools the daemon's spawned departments need.
+	for _, tool := range []string{"ip", "mount", "umount"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			fmt.Fprintf(os.Stderr, "self-check: required host tool %q not found in $PATH: %v — install with: apt-get install iproute2 mount\n", tool, err)
+			return 7
+		}
+	}
+
+	// 7. Orchestrator private key exists; if not, warn only — the
+	// daemon will generate it on first run.
+	keyPath := "/etc/ghost-stack/orchestrator.ed25519"
+	if _, err := os.Stat(keyPath); err != nil {
+		fmt.Fprintf(os.Stderr, "self-check: Ed25519 key not found at %s (daemon will generate on first run)\n", keyPath)
+	}
+
+	fmt.Fprintln(os.Stderr, "ghost-ctl: self-check: all preconditions satisfied")
+	return 0
+}
+
+// cmdDaemon is the long-running orchestrator daemon, launched by
+// systemd as ghost-orchestrator.service. It initializes the full
+// subsystem stack (SQLite, hierarchy, state manager, threat
+// response handler, alert socket), then blocks on a signal-aware
+// loop until SIGTERM or SIGINT. On shutdown it closes the alert
+// socket, drains the threat handler, and writes the final audit
+// entry.
+func cmdDaemon() {
+	if err := initialize(); err != nil {
+		fmt.Fprintf(os.Stderr, "ghost-ctl: daemon initialization failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Notify systemd Type=notify readiness.
+	sdNotify("READY=1\n")
+
+	// Block on signal-aware select until SIGTERM / SIGINT.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	fmt.Println("daemon: running (waiting for SIGTERM/SIGINT)")
+	sig := <-sigCh
+	fmt.Fprintf(os.Stderr, "daemon: received %s — shutting down\n", sig)
+
+	// Trigger the threat handler's accept loop to exit cleanly.
+	if threatHandler != nil {
+		threatHandler.Stop()
+	}
+
+	// Write final audit entry so operators know the daemon exited
+	// cleanly, not via a crash or OOM-kill.
+	appendAudit(AuditEntry{
+		Timestamp: time.Now().UTC(),
+		Action:    "ORCHESTRATOR_STOP",
+		Actor:     "daemon",
+		Result:    sig.String(),
+		Details:   map[string]interface{}{"pid": os.Getpid()},
+	})
+
+	// Persist state to SQLite so the next start recovers dept tree.
+	if stateManager != nil {
+		_ = stateManager.Close() // best-effort final flush
+	}
+}
+
+// sdNotify sends a single state string to systemd via the
+// NOTIFY_SOCKET unix datagram. Implements the sd_notify(3)
+// protocol in pure Go — no third-party dependency.
+func sdNotify(state string) {
+	sockPath := os.Getenv("NOTIFY_SOCKET")
+	if sockPath == "" {
+		return
+	}
+	addr := &net.UnixAddr{
+		Net:  "unixgram",
+		Name: sockPath,
+	}
+	if strings.HasPrefix(sockPath, "@") {
+		addr.Name = "\x00" + sockPath[1:]
+	}
+	conn, err := net.DialUnix("unixgram", nil, addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sd-notify: dial %s: %v\n", sockPath, err)
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte(state)); err != nil {
+		fmt.Fprintf(os.Stderr, "sd-notify: write %q: %v\n", strings.TrimSpace(state), err)
+	}
 }
 
 func parseTier(s string) hierarchy.Tier {
