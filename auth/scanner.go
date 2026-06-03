@@ -132,7 +132,6 @@ type IntegrityScanner struct {
 
 	// Scan counter.
 	scanCount      int
-	totalAnomalies int
 }
 
 // CriticalPaths are the filesystem paths monitored by SHA-256 hash verification.
@@ -524,8 +523,8 @@ func (is *IntegrityScanner) sendResult(result *ScanResult) {
 
 	// Write length-prefixed message.
 	header := fmt.Sprintf("SCAN:%d:", len(data))
-	conn.Write([]byte(header))
-	conn.Write(data)
+	_, _ = conn.Write([]byte(header))
+	_, _ = conn.Write(data)
 }
 
 // --- Helper functions ---

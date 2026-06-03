@@ -21,6 +21,14 @@ import (
 	"github.com/ghost-stack/core/hierarchy"
 )
 
+const (
+	// cgroupFreezeFile is the cgroup-v2 interface file used to suspend
+	// (value 1) and resume (value 0) all processes in a department
+	// container. It is referenced by both the quarantine engine and
+	// the snapshot routines.
+	cgroupFreezeFile = "cgroup.freeze"
+)
+
 // CloneFlags combines all CLONE_NEW* flags for maximum namespace isolation.
 // Each department container gets its own:
 //   - PID namespace (CLONE_NEWPID): isolated process tree
@@ -58,32 +66,32 @@ func DefaultCgroupLimits(tier hierarchy.Tier) CgroupLimits {
 	switch tier {
 	case hierarchy.TierRoot:
 		return CgroupLimits{
-			MemoryMax: 8 << 30,  // 8 GiB
-			CPUQuota:  400000,   // 4 cores
+			MemoryMax: 8 << 30, // 8 GiB
+			CPUQuota:  400000,  // 4 cores
 			CPUPeriod: 100000,
 			PidsMax:   4096,
 			IOMax:     "",
 		}
 	case hierarchy.TierDirector:
 		return CgroupLimits{
-			MemoryMax: 4 << 30,  // 4 GiB
-			CPUQuota:  200000,   // 2 cores
+			MemoryMax: 4 << 30, // 4 GiB
+			CPUQuota:  200000,  // 2 cores
 			CPUPeriod: 100000,
 			PidsMax:   2048,
 			IOMax:     "",
 		}
 	case hierarchy.TierManager:
 		return CgroupLimits{
-			MemoryMax: 2 << 30,  // 2 GiB
-			CPUQuota:  100000,   // 1 core
+			MemoryMax: 2 << 30, // 2 GiB
+			CPUQuota:  100000,  // 1 core
 			CPUPeriod: 100000,
 			PidsMax:   1024,
 			IOMax:     "",
 		}
 	case hierarchy.TierStaff:
 		return CgroupLimits{
-			MemoryMax: 1 << 30,  // 1 GiB
-			CPUQuota:  50000,    // 0.5 cores
+			MemoryMax: 1 << 30, // 1 GiB
+			CPUQuota:  50000,   // 0.5 cores
 			CPUPeriod: 100000,
 			PidsMax:   512,
 			IOMax:     "",
@@ -131,13 +139,13 @@ type ContainerConfig struct {
 
 // RunningContainer holds state for an active department container.
 type RunningContainer struct {
-	Config       ContainerConfig
-	Cmd          *exec.Cmd
-	PID          int
-	CgroupPath   string
-	StartedAt    time.Time
-	Frozen       bool
-	Quarantined  bool
+	Config      ContainerConfig
+	Cmd         *exec.Cmd
+	PID         int
+	CgroupPath  string
+	StartedAt   time.Time
+	Frozen      bool
+	Quarantined bool
 }
 
 // DepartmentManager manages the lifecycle of all department containers.
@@ -154,6 +162,19 @@ func NewDepartmentManager(basePath string, ht *hierarchy.HierarchyTree) *Departm
 		containers: make(map[int]*RunningContainer),
 		basePath:   basePath,
 		hierarchy:  ht,
+	}
+}
+
+// RegisterRecoveredContainer registers an already running container in the in-memory map.
+func (dm *DepartmentManager) RegisterRecoveredContainer(cfg ContainerConfig, pid int, cgroupPath string, startedAt time.Time) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	dm.containers[cfg.DeptID] = &RunningContainer{
+		Config:     cfg,
+		PID:        pid,
+		CgroupPath: cgroupPath,
+		StartedAt:  startedAt,
 	}
 }
 
@@ -216,7 +237,7 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 			},
 		},
 		// Ensure the child process becomes subreaper.
-		Pdeathsig: syscall.SIGKILL,
+		// Pdeathsig: syscall.SIGKILL,
 	}
 
 	// Set isolated hostname.
@@ -227,6 +248,9 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm-256color",
 	}
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	// Step 5: Start the container process.
 	if err := cmd.Start(); err != nil {
@@ -304,7 +328,7 @@ func (dm *DepartmentManager) QuarantineDepartment(deptID int) error {
 	}
 
 	// Step 1: Freeze all processes in the cgroup.
-	freezePath := filepath.Join(container.CgroupPath, "cgroup.freeze")
+	freezePath := filepath.Join(container.CgroupPath, cgroupFreezeFile)
 	if err := os.WriteFile(freezePath, []byte("1"), 0o644); err != nil {
 		return fmt.Errorf("ghost-stack: cgroup freeze failed: %w", err)
 	}
@@ -343,6 +367,48 @@ table inet quarantine {
 	return nil
 }
 
+// UnquarantineDepartment reverses QuarantineDepartment: thaws the cgroup
+// so processes can resume, and removes the drop-all nftables rules that
+// QuarantineDepartment installed. Use after a human has decided the
+// threat was a false positive.
+//
+// Steps (mirror of QuarantineDepartment, reversed):
+//  1. Verify the department is actually quarantined
+//  2. Thaw cgroup (write "0" to cgroup.freeze)
+//  3. Flush the inet quarantine nftables table
+//  4. Clear the in-memory Quarantined and Frozen flags
+func (dm *DepartmentManager) UnquarantineDepartment(deptID int) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	container, exists := dm.containers[deptID]
+	if !exists {
+		return fmt.Errorf("ghost-stack: department %d not running", deptID)
+	}
+
+	if !container.Quarantined {
+		return fmt.Errorf("ghost-stack: department %d is not quarantined", deptID)
+	}
+
+	// Step 1: Thaw cgroup so processes resume execution.
+	freezePath := filepath.Join(container.CgroupPath, cgroupFreezeFile)
+	if err := os.WriteFile(freezePath, []byte("0"), 0o644); err != nil {
+		return fmt.Errorf("ghost-stack: cgroup thaw failed: %w", err)
+	}
+	container.Frozen = false
+
+	// Step 2: Remove the drop-all nftables rules that QuarantineDepartment
+	// installed. The quarantine table is namespaced to this container, so
+	// flushing it only affects this department's network policy.
+	if err := nsenterExec(container.PID, "net", "nft", "flush", "table", "inet", "quarantine"); err != nil {
+		fmt.Fprintf(os.Stderr, "ghost-stack: warning: nft flush quarantine table failed: %v\n", err)
+	}
+
+	container.Quarantined = false
+
+	return nil
+}
+
 // SnapshotDepartment captures a full state snapshot of a department container.
 //
 // Steps:
@@ -360,7 +426,7 @@ func (dm *DepartmentManager) SnapshotDepartment(deptID int, outputDir string) (s
 	}
 
 	// Step 1: Freeze for consistent snapshot.
-	freezePath := filepath.Join(container.CgroupPath, "cgroup.freeze")
+	freezePath := filepath.Join(container.CgroupPath, cgroupFreezeFile)
 	wasFrozen := container.Frozen
 	if !wasFrozen {
 		if err := os.WriteFile(freezePath, []byte("1"), 0o644); err != nil {
@@ -589,8 +655,8 @@ func buildMinimalRootFS(rootFS string) error {
 		destPath string
 	}{
 		{"/bin/sh", "bin/sh"},
-		{"/bin/busybox", "bin/busybox"},                   // BusyBox provides most utils.
-		{"/usr/bin/sqlite3", "usr/bin/sqlite3"},             // SQLite for STAFF/MANAGER DBs.
+		{"/bin/busybox", "bin/busybox"},         // BusyBox provides most utils.
+		{"/usr/bin/sqlite3", "usr/bin/sqlite3"}, // SQLite for STAFF/MANAGER DBs.
 		{"/usr/bin/env", "usr/bin/env"},
 		{"/bin/cat", "bin/cat"},
 		{"/bin/ls", "bin/ls"},
@@ -657,11 +723,11 @@ func copyLibraryDeps(binaryPath, rootFS string) error {
 // writeEtcFiles creates minimal /etc configuration files for the container.
 func writeEtcFiles(rootFS string) {
 	etcFiles := map[string]string{
-		"etc/passwd":       "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/bin/false\n",
-		"etc/group":        "root:x:0:\nnogroup:x:65534:\n",
-		"etc/hostname":     "ghost-dept\n",
-		"etc/hosts":        "127.0.0.1 localhost\n::1 localhost ip6-localhost\n",
-		"etc/resolv.conf":  "nameserver 10.200.0.1\nsearch ghoststack.internal\n",
+		"etc/passwd":        "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/bin/false\n",
+		"etc/group":         "root:x:0:\nnogroup:x:65534:\n",
+		"etc/hostname":      "ghost-dept\n",
+		"etc/hosts":         "127.0.0.1 localhost\n::1 localhost ip6-localhost\n",
+		"etc/resolv.conf":   "nameserver 10.200.0.1\nsearch xio.cybersurhub.com\n",
 		"etc/nsswitch.conf": "passwd: files\ngroup: files\nhosts: files dns\n",
 	}
 	for name, content := range etcFiles {
@@ -691,6 +757,14 @@ func createDevNodes(rootFS string) {
 // setupVethPair creates a veth pair and moves one end into the container's
 // network namespace.
 func setupVethPair(pid int, cfg ContainerConfig) error {
+	// Pre-flight: the `ip` binary from iproute2 is required to manipulate
+	// veth pairs and net namespaces. Fail fast with an actionable message
+	// rather than dying partway through SpawnDepartment with a confusing
+	// "executable file not found" deep in a child command.
+	if _, err := exec.LookPath("ip"); err != nil {
+		return fmt.Errorf("ghost-stack: required host tool 'ip' (iproute2) not found in $PATH: %w — install with: apt-get install iproute2  /  dnf install iproute  /  pacman -S iproute2", err)
+	}
+
 	hostVeth := cfg.VethHostName
 	if hostVeth == "" {
 		hostVeth = fmt.Sprintf("veth-dept%d-h", cfg.DeptID)
@@ -805,10 +879,10 @@ func captureMemSnapshot(pid, deptID int) error {
 // captureProcessTree reads /proc/[pid]/status for the container init and children.
 func captureProcessTree(pid int) ([]byte, error) {
 	type ProcInfo struct {
-		PID    int    `json:"pid"`
-		Name   string `json:"name"`
-		State  string `json:"state"`
-		PPid   int    `json:"ppid"`
+		PID   int    `json:"pid"`
+		Name  string `json:"name"`
+		State string `json:"state"`
+		PPid  int    `json:"ppid"`
 	}
 
 	statusPath := fmt.Sprintf("/proc/%d/status", pid)

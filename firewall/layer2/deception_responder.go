@@ -442,9 +442,9 @@ func generateFakeSecrets() map[string]interface{} {
 
 func generateFakeSearchResults() map[string]interface{} {
 	fakeEmployees := []map[string]interface{}{
-		{"_source": map[string]string{"name": "John Mitchell", "dept": "Engineering", "email": "john.m@ghoststack.internal", "badge": "EMP-4521"}},
-		{"_source": map[string]string{"name": "Sarah Chen", "dept": "Security", "email": "sarah.c@ghoststack.internal", "badge": "EMP-1892"}},
-		{"_source": map[string]string{"name": "Michael Torres", "dept": "Finance", "email": "michael.t@ghoststack.internal", "badge": "EMP-3344"}},
+		{"_source": map[string]string{"name": "John Mitchell", "dept": "Engineering", "email": "john.m@xio.cybersurhub.com", "badge": "EMP-4521"}},
+		{"_source": map[string]string{"name": "Sarah Chen", "dept": "Security", "email": "sarah.c@xio.cybersurhub.com", "badge": "EMP-1892"}},
+		{"_source": map[string]string{"name": "Michael Torres", "dept": "Finance", "email": "michael.t@xio.cybersurhub.com", "badge": "EMP-3344"}},
 	}
 	return map[string]interface{}{
 		"took":      3,

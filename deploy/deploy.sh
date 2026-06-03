@@ -264,6 +264,38 @@ ALERT_SOCKET="${GHOST_RUN}/alert.sock"
 rm -f "${ALERT_SOCKET}"
 log_ok "Alert bus socket directory ready: ${GHOST_RUN}"
 
+# --- Step 7b: Install logrotate config for the append-only audit trail ---
+# The audit log at ${GHOST_DATA}/audit/audit.log grows indefinitely otherwise.
+# Rotate weekly AND size-based (whichever comes first), keep 12 weeks of
+# compressed history. Uses `copytruncate` because ghost-ctl's appendAudit
+# is called from the long-lived threat-response handler goroutine — a
+# rename-only rotation would leave that goroutine writing to a deleted
+# inode, and the freshly-created audit.log would silently stay empty.
+log_info "Installing logrotate config for audit trail..."
+
+cat > /etc/logrotate.d/ghost-stack <<EOF
+# /etc/logrotate.d/ghost-stack
+# Rotates the append-only GHOST-STACK audit trail to prevent unbounded
+# disk growth. Managed by deploy/deploy.sh — do not edit by hand.
+${GHOST_DATA}/audit/*.log {
+    weekly
+    size 100M
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 root root
+    dateext
+    dateformat -%Y%m%d-%s
+    sharedscripts
+}
+EOF
+
+chmod 0644 /etc/logrotate.d/ghost-stack
+log_ok "logrotate config installed at /etc/logrotate.d/ghost-stack"
+
 # --- Step 8: Install AppArmor template ---
 log_info "Installing AppArmor profile template..."
 

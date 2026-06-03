@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -194,8 +195,8 @@ func wipeFile(path string) {
 	}
 
 	zeros := make([]byte, info.Size())
-	f.Write(zeros)
-	f.Sync()
+	_, _ = f.Write(zeros)
+	_ = f.Sync()
 }
 
 // KeyVault manages encryption keys and database credentials for all departments.
@@ -274,7 +275,7 @@ func (kv *KeyVault) InitializeDepartmentDB(deptID int, deptName string, tier hie
 	volumePath := filepath.Join(kv.basePath, "volumes", fmt.Sprintf("dept-%d.luks2", deptID))
 	mountPoint := filepath.Join(kv.basePath, "mounts", fmt.Sprintf("dept-%d", deptID))
 	backupDir := filepath.Join(kv.basePath, "backups", fmt.Sprintf("dept-%d", deptID))
-	gpgKeyID := fmt.Sprintf("dept-%d@ghoststack.internal", deptID)
+	gpgKeyID := fmt.Sprintf("dept-%d@xio.cybersurhub.com", deptID)
 
 	// Create directories.
 	for _, d := range []string{mountPoint, backupDir} {
@@ -538,7 +539,7 @@ func (kv *KeyVault) generateCredentials(deptID int, deptName string, dbType Data
 	creds := &DatabaseCredentials{
 		Username:  fmt.Sprintf("ghost_dept_%d", deptID),
 		Password:  password,
-		Database:  fmt.Sprintf("ghost_%s", deptName),
+		Database:  fmt.Sprintf("ghost_%s", strings.ReplaceAll(deptName, " ", "_")),
 		Host:      "localhost",
 		CreatedAt: now,
 		ExpiresAt: now.Add(CredentialRotationInterval),
@@ -574,46 +575,17 @@ func (kv *KeyVault) encryptKey(plainKey []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plainKey, nil), nil
 }
 
-// createLUKS2Volume creates a LUKS2 encrypted volume file.
-// DEPRECATED: Use createLUKS2VolumeWithKeyFile via HostKeyStore.UseKey.
-func createLUKS2Volume(volumePath string, key []byte) error {
-	// Create sparse file for the volume.
-	createCmd := exec.Command("fallocate", "-l", LUKSVolumeSize, volumePath)
-	if err := createCmd.Run(); err != nil {
-		// Fallback for filesystems that don't support fallocate.
-		createCmd = exec.Command("dd", "if=/dev/zero", "of="+volumePath,
-			"bs=1M", "count=0", "seek=2048")
-		if err := createCmd.Run(); err != nil {
-			return fmt.Errorf("volume file creation: %w", err)
-		}
-	}
-
-	// Format as LUKS2 with the provided key via stdin.
-	keyFile := volumePath + ".key"
-	if err := os.WriteFile(keyFile, key, 0o600); err != nil {
-		return fmt.Errorf("key file write: %w", err)
-	}
-	defer os.Remove(keyFile)
-
-	formatCmd := exec.Command("cryptsetup", "luksFormat",
-		"--type", "luks2",
-		"--cipher", "aes-xts-plain64",
-		"--key-size", "512",
-		"--hash", "sha256",
-		"--iter-time", "2000",
-		"--batch-mode",
-		"--key-file", keyFile,
-		volumePath)
-	if err := formatCmd.Run(); err != nil {
-		return fmt.Errorf("LUKS format: %w", err)
-	}
-
-	return nil
-}
-
 // createLUKS2VolumeWithKeyFile creates a LUKS2 volume using a tmpfs key file.
 // The key file path points to /dev/shm — RAM only, never persistent disk.
 func createLUKS2VolumeWithKeyFile(volumePath, keyFilePath string) error {
+	// Pre-flight: cryptsetup is required to format the LUKS2 header. Fail
+	// fast with an actionable message rather than the cryptic
+	// "LUKS format: exec: \"cryptsetup\": executable file not found" that
+	// would otherwise surface mid-spawn.
+	if _, err := exec.LookPath("cryptsetup"); err != nil {
+		return fmt.Errorf("ghost-stack/vault: required host tool 'cryptsetup' not found in $PATH: %w — install with: apt-get install cryptsetup  /  dnf install cryptsetup  /  pacman -S cryptsetup", err)
+	}
+
 	// Create sparse file for the volume.
 	createCmd := exec.Command("fallocate", "-l", LUKSVolumeSize, volumePath)
 	if err := createCmd.Run(); err != nil {
@@ -642,24 +614,14 @@ func createLUKS2VolumeWithKeyFile(volumePath, keyFilePath string) error {
 
 // openLUKS2VolumeWithKeyFile opens a LUKS2 volume using a tmpfs key file.
 func openLUKS2VolumeWithKeyFile(volumePath, dmName, keyFilePath string) error {
+	// Pre-flight: see createLUKS2VolumeWithKeyFile for rationale.
+	if _, err := exec.LookPath("cryptsetup"); err != nil {
+		return fmt.Errorf("ghost-stack/vault: required host tool 'cryptsetup' not found in $PATH: %w — install with: apt-get install cryptsetup  /  dnf install cryptsetup  /  pacman -S cryptsetup", err)
+	}
+
 	cmd := exec.Command("cryptsetup", "open",
 		"--type", "luks2",
 		"--key-file", keyFilePath,
-		volumePath, dmName)
-	return cmd.Run()
-}
-
-// openLUKS2Volume opens a LUKS2 volume with the provided key.
-func openLUKS2Volume(volumePath, dmName string, key []byte) error {
-	keyFile := volumePath + ".key"
-	if err := os.WriteFile(keyFile, key, 0o600); err != nil {
-		return err
-	}
-	defer os.Remove(keyFile)
-
-	cmd := exec.Command("cryptsetup", "open",
-		"--type", "luks2",
-		"--key-file", keyFile,
 		volumePath, dmName)
 	return cmd.Run()
 }
@@ -684,6 +646,16 @@ func mountVolume(dmName, mountPoint string) error {
 
 	mountCmd := exec.Command("mount", devPath, mountPoint)
 	return mountCmd.Run()
+}
+
+// sanitizeSQLString escapes single quotes in a string for safe use in SQL literals.
+func sanitizeSQLString(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sanitizePostgresIdentifier escapes double quotes in a string for safe use as a PostgreSQL identifier.
+func sanitizePostgresIdentifier(s string) string {
+	return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 }
 
 // initSQLiteDB initializes a SQLite database in the mounted volume.
@@ -718,7 +690,7 @@ CREATE TABLE IF NOT EXISTS dept_data (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_dept_data_category ON dept_data(category);
-`, deptName)
+`, sanitizeSQLString(deptName))
 
 	initCmd := exec.Command("sqlite3", dbPath, sqlInit)
 	return initCmd.Run()
@@ -767,8 +739,7 @@ func rotateSQLiteKey(mountPoint, newKey string) error {
 
 	// In production with SQLCipher, this would use PRAGMA rekey.
 	// For standard SQLite, we record the rotation event.
-	sql := fmt.Sprintf(`INSERT INTO audit_log (action, subject, details) 
-		VALUES ('KEY_ROTATION', 'database', 'key_hash=%s');`,
+	sql := fmt.Sprintf(`INSERT INTO audit_log (action, subject, details) VALUES ('KEY_ROTATION', 'database', 'key_hash=%s');`,
 		hex.EncodeToString(sha256.New().Sum([]byte(newKey)))[:16])
 
 	cmd := exec.Command("sqlite3", dbPath, sql)
@@ -780,7 +751,8 @@ func rotatePostgreSQLCredentials(mountPoint string, creds *DatabaseCredentials) 
 	pgDataDir := filepath.Join(mountPoint, "pgdata")
 
 	sql := fmt.Sprintf("ALTER USER %s WITH PASSWORD '%s';",
-		creds.Username, creds.Password)
+		sanitizePostgresIdentifier(creds.Username),
+		sanitizeSQLString(creds.Password))
 
 	cmd := exec.Command("psql",
 		"-h", "localhost",
