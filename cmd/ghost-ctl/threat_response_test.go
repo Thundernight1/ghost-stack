@@ -82,8 +82,8 @@ func TestThreatResponseHandler_AutoBlocksHighScoreIP(t *testing.T) {
 	if blocked[0].ThreatScore != 99 {
 		t.Fatalf("expected threat score 99, got %d", blocked[0].ThreatScore)
 	}
-	if blocked[0].Reason != "THREAT_ACTOR_PROFILED" {
-		t.Fatalf("expected reason THREAT_ACTOR_PROFILED, got %s", blocked[0].Reason)
+	if blocked[0].Reason != "THREAT_SCORE_EXCEEDED" {
+		t.Fatalf("expected reason THREAT_SCORE_EXCEEDED, got %s", blocked[0].Reason)
 	}
 
 	// The in-memory allowlist should NOT contain the blocked IP
