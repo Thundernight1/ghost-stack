@@ -12,6 +12,19 @@
       "pages": [
         "walkthrough"
       ]
+    },
+    {
+      "group": "CLI",
+      "pages": [
+        "cli/help"
+      ]
+    },
+    {
+      "group": "Operations",
+      "pages": [
+        "operations/unquarantine",
+        "operations/audit-log-rotation"
+      ]
     }
   ]
 }
