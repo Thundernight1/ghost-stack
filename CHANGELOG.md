@@ -276,3 +276,23 @@ Gerçek gosec bu kodda daha önce hiç yeşil olmamıştı (önceden echo stub'd
   Tehlikeli sınıflar (G101, G201, G401-G405, G115 dahil) aktif.
 - Doğrulama: `gosec` 0 bulgu, `staticcheck` temiz, `go vet` temiz,
   3 binary derleniyor, CI test alt kümesi geçiyor.
+
+## 15. CI — Go 1.25'e geçiş ve staticcheck v0.7.0 (2026-09-20)
+
+**Dosya:** `.github/workflows/ci.yml`, `go.mod`, `auth/webauthn.go`
+
+`github.com/cilium/ebpf v0.22.0` (dependabot PR #12) `go >= 1.25` istiyor;
+CI'daki Go 1.22.2 + staticcheck v0.5.1 kombinasyonu 4. adımı tekrar kırdı
+(v0.5.1, Go 1.25'in export formatını okuyamıyor:
+`internal error ... unsupported version: 2`).
+
+- CI `go-version: '1.25'`'e çekildi; `go.mod`'daki `go` direktifi de
+  `1.25.0` oldu (ebpf bağımlılığı bunu zaten zorunlu kılıyordu).
+- staticcheck `v0.7.0`'a pin'lendi (Go 1.25 export formatını anlayan en eski
+  sürüm); gosec `v2.22.0`'da kaldı (Go 1.25 altında 0 bulgu doğrulandı).
+- v0.7.0'ın tek yeni bulgusu düzeltildi: `auth/webauthn.go`'daki
+  `elliptic.Curve.IsOnCurve` (SA1019, Go 1.21'den beri deprecated) yerine
+  `crypto/ecdh` ile on-curve doğrulaması; dönüş tipi (`*ecdsa.PublicKey`)
+  ve davranış aynı.
+- Doğrulama: `gosec` 0 bulgu, `staticcheck v0.7.0` temiz, `go vet` temiz,
+  3 binary derleniyor, `go test ./...` geçiyor.

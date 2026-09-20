@@ -16,7 +16,7 @@ jobs:
       - name: Setup Go Environment
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.2'
+          go-version: '1.25'
           cache: true
 
       - name: Install Kernel Headers and Build Tools
@@ -53,9 +53,12 @@ jobs:
 
       - name: 4. Security Scan (gosec + staticcheck)
         # Tool versions are pinned: @latest drifts -- new releases added rules
-        # and raised the minimum Go version (gosec needs >= 1.25, staticcheck
-        # needs >= 1.26), which broke this step. Pinned to the newest releases
-        # that run on the CI's Go 1.22.2; bump together with go-version above.
+        # and raised the minimum Go version, which broke this step twice.
+        # CI now runs Go 1.25 (required by github.com/cilium/ebpf v0.22.0);
+        # gosec v2.22.0 is the newest release verified clean on this codebase,
+        # staticcheck v0.7.0 is the oldest release that understands Go 1.25
+        # export data (v0.5.1 fails with "unsupported version: 2").
+        # Bump together with go-version above.
         #
         # gosec exclusions (audited 2026-09-20, all remaining rules enforced):
         # - G104: 42 findings, all LOW, all unhandled Close()/Encode() on
@@ -70,7 +73,7 @@ jobs:
         #   breaking container setup (reviewed per call site).
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.22.0
-          go install honnef.co/go/tools/cmd/staticcheck@v0.5.1
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
           echo "--- gosec ---"
           gosec -fmt=text -exclude=G104,G204,G304,G301,G302,G306 ./...
           echo "--- staticcheck ---"

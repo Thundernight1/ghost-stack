@@ -20,6 +20,7 @@ package auth
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -379,7 +380,13 @@ func coseKeyToECDSA(raw []byte) (*ecdsa.PublicKey, error) {
 	curve := elliptic.P256()
 	bx := new(big.Int).SetBytes(x.b)
 	by := new(big.Int).SetBytes(y.b)
-	if !curve.IsOnCurve(bx, by) {
+	// elliptic.Curve.IsOnCurve is deprecated (low-level, unsafe API).
+	// crypto/ecdh performs the on-curve check inside NewPublicKey.
+	uncompressed := make([]byte, 0, 65)
+	uncompressed = append(uncompressed, 0x04)
+	uncompressed = append(uncompressed, x.b...)
+	uncompressed = append(uncompressed, y.b...)
+	if _, err := ecdh.P256().NewPublicKey(uncompressed); err != nil {
 		return nil, fmt.Errorf("COSE point not on P-256")
 	}
 	return &ecdsa.PublicKey{Curve: curve, X: bx, Y: by}, nil
