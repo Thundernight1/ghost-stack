@@ -148,6 +148,11 @@ dashboard JS `node --check` ✅
     `OTPSender` üzerinden kullanıcıya gidiyor. OTP karşılaştırma
     constant-time (`subtle.ConstantTimeCompare`); HMAC karşılaştırma
     `hmac.Equal`.
+  - **Fail-closed OTP (2026-09-20):** `OTPSender` yapılandırılmamışsa kod
+    stderr'e yazılmıyor; `sendOTP` hata dönüyor, `issueOTP` pending
+    kaydını geri alıyor (`delete`) ve çağırana hata veriyor. Regresyon
+    testleri: `TestIssueOTP_FailsClosedWithoutSender`,
+    `TestIssueOTP_RollsBackOnDeliveryError` (`auth/otp_test.go`).
   - `ValidateSession()` artık `EncryptedPayload`'u AES-GCM ile çözüp
     `TokenID`/`DeptID`/`UserEmail`/`Tier`/fingerprint/issued/expiry
     alanlarını zarfla karşılaştırıyor (`verifyTokenPayload`).

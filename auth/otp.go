@@ -8,14 +8,13 @@
 // The OTP code is NEVER returned to the API caller: issueOTP hands back a
 // redacted challenge (Code == ""). The code lives only in the server-side
 // pendingOTPs record and travels to the user through the OTPSender.
-// When no sender is configured, the code is written to stderr as a
-// development-only fallback — never rely on this in production.
+// Fail-closed: if no sender is configured, issuance fails outright —
+// there is no fallback channel the code could leak through.
 package auth
 
 import (
 	"fmt"
 	"net/smtp"
-	"os"
 	"strings"
 	"time"
 )
@@ -26,8 +25,7 @@ type OTPSender interface {
 }
 
 // SetOTPSender configures the delivery channel for OTP codes.
-// Until set, codes are written to stderr (development fallback —
-// never rely on this in production).
+// Issuance fails closed until a sender is set.
 func (sm *SessionManager) SetOTPSender(sender OTPSender) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -35,11 +33,12 @@ func (sm *SessionManager) SetOTPSender(sender OTPSender) {
 }
 
 // sendOTP delivers the code through the configured sender.
+// Fail-closed: without a sender there is no delivery channel, so issuance
+// must fail instead of leaking the code through any fallback.
 func (sm *SessionManager) sendOTP(email, code string, expiresAt time.Time) error {
 	sender := sm.otpSender // read under caller's lock
 	if sender == nil {
-		fmt.Fprintf(os.Stderr, "ghost-stack/auth: no OTP sender configured — code for %s: %s (dev fallback)\n", email, code)
-		return nil
+		return fmt.Errorf("ghost-stack/auth: no OTP sender configured — refusing to issue code")
 	}
 	return sender.SendOTP(email, code, expiresAt)
 }
