@@ -22,3 +22,24 @@ coverage.html
 .DS_Store
 .vscode/
 .idea/
+
+# Build artifacts
+*.o
+*.a
+*.test
+
+# Editor/backup files
+*.bak
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# OS/metadata
+.DS_Store
+Thumbs.db
+
+# Local caches and temp
+.cache/
+tmp/

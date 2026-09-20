@@ -153,7 +153,14 @@ chmod -R 755 "${GHOST_HOME}"
 chown -R root:root "${GHOST_DATA}"
 chmod -R 700 "${GHOST_DATA}"
 chmod 700 "${GHOST_DATA}/audit"
-chattr +a "${GHOST_DATA}/audit" 2>/dev/null || log_warn "chattr +a failed (audit dir append-only)"
+# Append-only goes on the audit LOG FILE, not the directory: chattr +a on
+# the directory would forbid renames inside it and break logrotate's
+# rename-based rotation (step 7b). The file flag still prevents
+# truncation/overwrites; logrotate's postrotate re-applies it after each
+# rotation.
+touch "${GHOST_DATA}/audit/audit.log"
+chmod 600 "${GHOST_DATA}/audit/audit.log"
+chattr +a "${GHOST_DATA}/audit/audit.log" 2>/dev/null || log_warn "chattr +a failed (audit log append-only)"
 
 log_ok "Directory structure created"
 
@@ -267,16 +274,25 @@ log_ok "Alert bus socket directory ready: ${GHOST_RUN}"
 # --- Step 7b: Install logrotate config for the append-only audit trail ---
 # The audit log at ${GHOST_DATA}/audit/audit.log grows indefinitely otherwise.
 # Rotate weekly AND size-based (whichever comes first), keep 12 weeks of
-# compressed history. Uses `copytruncate` because ghost-ctl's appendAudit
-# is called from the long-lived threat-response handler goroutine — a
-# rename-only rotation would leave that goroutine writing to a deleted
-# inode, and the freshly-created audit.log would silently stay empty.
+# compressed history.
+#
+# IMPORTANT: this MUST stay rename-based (create), never copytruncate.
+# copytruncate truncates the live file, which (a) fails on append-only
+# (+a) files, (b) races with writers — entries logged between the copy
+# and the truncate are silently lost, and (c) breaks the audit hash
+# chain. ghost-ctl opens the audit file fresh (O_APPEND) on every write,
+# so a rename-based rotation loses nothing: the next appendAudit detects
+# the new inode and starts a fresh chain segment with an
+# AUDIT_CHAIN_ROTATED genesis entry linking to the previous tail hash
+# (verifiable with `ghost-ctl audit-trail --verify`).
 log_info "Installing logrotate config for audit trail..."
 
 cat > /etc/logrotate.d/ghost-stack <<EOF
 # /etc/logrotate.d/ghost-stack
 # Rotates the append-only GHOST-STACK audit trail to prevent unbounded
 # disk growth. Managed by deploy/deploy.sh — do not edit by hand.
+# Rename-based rotation (NO copytruncate): ghost-ctl detects the new
+# inode and re-chains the audit log automatically.
 ${GHOST_DATA}/audit/*.log {
     weekly
     size 100M
@@ -285,11 +301,14 @@ ${GHOST_DATA}/audit/*.log {
     delaycompress
     missingok
     notifempty
-    copytruncate
-    create 0640 root root
+    create 0600 root root
     dateext
     dateformat -%Y%m%d-%s
     sharedscripts
+    postrotate
+        # Re-apply append-only to the freshly created audit log.
+        chattr +a ${GHOST_DATA}/audit/audit.log 2>/dev/null || true
+    endscript
 }
 EOF
 

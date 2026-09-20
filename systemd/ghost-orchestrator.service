@@ -25,7 +25,7 @@ AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE 
 # Ensure cgroups v2 is available.
 Delegate=yes
 
-# Logging: append-only to immutable partition.
+# Logging: append-only (hash-chained) audit log under /var/lib/ghost-stack/audit.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ghost-orchestrator
@@ -44,6 +44,11 @@ StateDirectory=ghost-stack
 Environment=GHOST_LOG_LEVEL=info
 Environment=GHOST_AUDIT_PATH=/var/lib/ghost-stack/audit/audit.log
 Environment=GHOST_ALERT_SOCKET=/var/run/ghost-stack/alert.sock
+# Layer 3 XDP: compiled object attached at daemon start (best-effort;
+# needs CAP_BPF and the object to exist). Empty disables the attach.
+Environment=GHOST_XDP_OBJECT=/opt/ghost-stack/bpf/layer3_invisible.bpf.o
+# Read-only status API for the dashboard (loopback only by default).
+Environment=GHOST_STATUS_ADDR=127.0.0.1:9090
 
 [Install]
 WantedBy=multi-user.target

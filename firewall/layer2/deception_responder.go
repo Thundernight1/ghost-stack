@@ -14,10 +14,16 @@
 package layer2
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
 	"net/http"
 	"strings"
@@ -36,16 +42,16 @@ type DeceptionListener struct {
 
 // DeceptionEvent represents an interaction with a fake service.
 type DeceptionEvent struct {
-	Timestamp    time.Time         `json:"timestamp"`
-	SourceIP     string            `json:"source_ip"`
-	SourcePort   int               `json:"source_port"`
-	Service      string            `json:"service"`
-	Method       string            `json:"method"`
-	Path         string            `json:"path"`
-	Headers      map[string]string `json:"headers"`
-	Body         string            `json:"body,omitempty"`
-	UserAgent    string            `json:"user_agent"`
-	Credentials  *CredAttempt      `json:"credentials,omitempty"`
+	Timestamp   time.Time         `json:"timestamp"`
+	SourceIP    string            `json:"source_ip"`
+	SourcePort  int               `json:"source_port"`
+	Service     string            `json:"service"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Headers     map[string]string `json:"headers"`
+	Body        string            `json:"body,omitempty"`
+	UserAgent   string            `json:"user_agent"`
+	Credentials *CredAttempt      `json:"credentials,omitempty"`
 }
 
 // CredAttempt represents a captured credential attempt.
@@ -166,13 +172,13 @@ func (dl *DeceptionListener) captureRequest(r *http.Request, service string) {
 	}
 
 	event := DeceptionEvent{
-		Timestamp:  time.Now(),
-		SourceIP:   extractIP(r.RemoteAddr),
-		Service:    service,
-		Method:     r.Method,
-		Path:       r.URL.Path,
-		UserAgent:  r.UserAgent(),
-		Headers:    extractHeaders(r),
+		Timestamp: time.Now(),
+		SourceIP:  extractIP(r.RemoteAddr),
+		Service:   service,
+		Method:    r.Method,
+		Path:      r.URL.Path,
+		UserAgent: r.UserAgent(),
+		Headers:   extractHeaders(r),
 	}
 
 	// Extract credentials from various authentication methods.
@@ -424,16 +430,16 @@ func generateFakeSecrets() map[string]interface{} {
 				"metadata": map[string]string{"name": "db-credentials", "namespace": "default"},
 				"type":     "Opaque",
 				"data": map[string]string{
-					"username": "Z2hvc3RfZGJfYWRtaW4=",       // ghost_db_admin (fake)
-					"password": "c3VwZXJfc2VjcmV0X3Bhc3M=",   // super_secret_pass (fake)
+					"username": "Z2hvc3RfZGJfYWRtaW4=",     // ghost_db_admin (fake)
+					"password": "c3VwZXJfc2VjcmV0X3Bhc3M=", // super_secret_pass (fake)
 				},
 			},
 			{
 				"metadata": map[string]string{"name": "api-keys", "namespace": "default"},
 				"type":     "Opaque",
 				"data": map[string]string{
-					"stripe-key":  "c2tfdGVzdF9mYWtlX2tleQ==", // fake
-					"aws-key":     "QUtJQUZBS0VGQUtFRkFLRQ==", // fake
+					"stripe-key": "c2tfdGVzdF9mYWtlX2tleQ==", // fake
+					"aws-key":    "QUtJQUZBS0VGQUtFRkFLRQ==", // fake
 				},
 			},
 		},
@@ -459,28 +465,28 @@ func generateFakeSearchResults() map[string]interface{} {
 func generateFakeContainers() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
-			"Id":      "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
-			"Names":   []string{"/ghost-api-gateway"},
-			"Image":   "ghost-registry.internal/api-gateway:2.1.4",
-			"State":   "running",
-			"Status":  "Up 14 days",
-			"Ports":   []map[string]interface{}{{"PrivatePort": 8080, "PublicPort": 80, "Type": "tcp"}},
+			"Id":     "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+			"Names":  []string{"/ghost-api-gateway"},
+			"Image":  "ghost-registry.internal/api-gateway:2.1.4",
+			"State":  "running",
+			"Status": "Up 14 days",
+			"Ports":  []map[string]interface{}{{"PrivatePort": 8080, "PublicPort": 80, "Type": "tcp"}},
 		},
 		{
-			"Id":      "b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7",
-			"Names":   []string{"/ghost-auth-service"},
-			"Image":   "ghost-registry.internal/auth-service:3.0.1",
-			"State":   "running",
-			"Status":  "Up 14 days",
-			"Ports":   []map[string]interface{}{{"PrivatePort": 9090, "Type": "tcp"}},
+			"Id":     "b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7",
+			"Names":  []string{"/ghost-auth-service"},
+			"Image":  "ghost-registry.internal/auth-service:3.0.1",
+			"State":  "running",
+			"Status": "Up 14 days",
+			"Ports":  []map[string]interface{}{{"PrivatePort": 9090, "Type": "tcp"}},
 		},
 		{
-			"Id":      "c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8",
-			"Names":   []string{"/ghost-postgres-primary"},
-			"Image":   "postgres:16-alpine",
-			"State":   "running",
-			"Status":  "Up 30 days",
-			"Ports":   []map[string]interface{}{{"PrivatePort": 5432, "Type": "tcp"}},
+			"Id":     "c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8",
+			"Names":  []string{"/ghost-postgres-primary"},
+			"Image":  "postgres:16-alpine",
+			"State":  "running",
+			"Status": "Up 30 days",
+			"Ports":  []map[string]interface{}{{"PrivatePort": 5432, "Type": "tcp"}},
 		},
 	}
 }
@@ -525,22 +531,60 @@ func extractCredentials(r *http.Request) *CredAttempt {
 	return nil
 }
 
+// generateSelfSignedCert creates a real, valid short-lived self-signed
+// certificate for a deception TLS listener. The subject mimics plausible
+// internal infrastructure (per-service CN) so scanners fingerprint a
+// boring corporate service, not a honeypot. Certificates live 24 hours —
+// listeners are recycled regularly, so long-lived certs would only aid
+// fingerprinting.
 func generateSelfSignedCert(name string) (tls.Certificate, error) {
-	// In production, use crypto/x509 to generate a proper self-signed cert
-	// with plausible-looking subject fields.
-	// For now, use a generated in-memory cert.
-	certPem := fmt.Sprintf(`-----BEGIN CERTIFICATE-----
-MIIC+TCCAeGgAwIBAgIRAJ%s0123456789ABCDEFwDQYJKoZIhvcNAQELBQAw
-GHOST-STACK-INTERNAL-CA-DECEPTION
------END CERTIFICATE-----`, name)
-	keyPem := `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIGHOSTSTACKDECEPTIONKEYNOTREAL1234567890
------END PRIVATE KEY-----`
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("deception: keygen: %w", err)
+	}
 
-	return tls.X509KeyPair([]byte(certPem), []byte(keyPem))
+	serial := make([]byte, 16)
+	if _, err := crand.Read(serial); err != nil {
+		return tls.Certificate{}, fmt.Errorf("deception: serial: %w", err)
+	}
+
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: new(big.Int).SetBytes(serial),
+		Subject: pkix.Name{
+			CommonName:   name + ".internal",
+			Organization: []string{"IT Infrastructure"},
+		},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{name + ".internal"},
+	}
+
+	der, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("deception: create cert: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("deception: marshal key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("deception: load keypair: %w", err)
+	}
+	// Attach the parsed leaf so handlers can inspect validity windows.
+	if leaf, err := x509.ParseCertificate(der); err == nil {
+		cert.Leaf = leaf
+	}
+	return cert, nil
 }
 
-// init seeds the random number generator.
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
+// Note: the old math/rand seeding init() was removed — math/rand is
+// auto-seeded since Go 1.20 and crypto/rand is used for key material.

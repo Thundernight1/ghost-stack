@@ -7,11 +7,15 @@ PartOf=ghost-orchestrator.service
 
 [Service]
 Type=simple
-ExecStart=/opt/ghost-stack/bin/agent-beta \
-    --nflog-group=1 \
-    --l2-perf-map=/sys/fs/bpf/ghost_l2_events \
-    --l3-drop-map=/sys/fs/bpf/ghost_l3_drops \
-    --alert-socket=/var/run/ghost-stack/alert.sock
+# agent-beta takes NO command-line flags — all configuration is via
+# environment (see cmd/agent-beta/main.go). The paths below match the
+# binary's compiled-in defaults AND the orchestrator's pinned-map
+# locations (/sys/fs/bpf/ghost-stack/…); keep them in sync.
+ExecStart=/opt/ghost-stack/bin/agent-beta
+Environment=GHOST_NFLOG_GROUP=1
+Environment=GHOST_L2_PERF_MAP=/sys/fs/bpf/ghost-stack/l2_events
+Environment=GHOST_L3_DROP_MAP=/sys/fs/bpf/ghost-stack/l3_drops
+Environment=GHOST_ALERT_SOCKET=/var/run/ghost-stack/alert.sock
 Restart=on-failure
 RestartSec=3
 

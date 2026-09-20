@@ -48,13 +48,13 @@ type LayerEvent struct {
 
 // Alert represents an alert sent to the orchestrator.
 type Alert struct {
-	Timestamp   time.Time        `json:"timestamp"`
-	Severity    string           `json:"severity"` // INFO, WARNING, CRITICAL, ALERT
-	Source      string           `json:"source"`   // AGENT-BETA
-	EventType   string           `json:"event_type"`
-	SourceIP    string           `json:"source_ip,omitempty"`
-	ThreatScore int              `json:"threat_score,omitempty"`
-	Profile     *AttackerProfile `json:"profile,omitempty"`
+	Timestamp   time.Time              `json:"timestamp"`
+	Severity    string                 `json:"severity"` // INFO, WARNING, CRITICAL, ALERT
+	Source      string                 `json:"source"`   // AGENT-BETA
+	EventType   string                 `json:"event_type"`
+	SourceIP    string                 `json:"source_ip,omitempty"`
+	ThreatScore int                    `json:"threat_score,omitempty"`
+	Profile     *AttackerProfile       `json:"profile,omitempty"`
 	Details     map[string]interface{} `json:"details,omitempty"`
 }
 
@@ -83,6 +83,10 @@ type AgentBeta struct {
 // NewAgentBeta creates a new AGENT-BETA instance.
 func NewAgentBeta(cfg AgentBetaConfig) *AgentBeta {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	if cfg.NflogGroup == 0 {
+		cfg.NflogGroup = 1 // documented default
+	}
 
 	return &AgentBeta{
 		config:   cfg,
@@ -144,41 +148,35 @@ func (ab *AgentBeta) Stop() {
 func (ab *AgentBeta) l1NflogReader() {
 	defer ab.wg.Done()
 
-	// Open netlink socket for NFLOG group.
-	// In production: uses github.com/florianl/go-nflog/v2
-	// The nflog messages come from Layer 1 nftables rules.
-	fd, err := openNflogSocket(ab.config.NflogGroup)
+	r, err := openNFLOG(ab.config.NflogGroup)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-beta/L1: nflog socket: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agent-beta/L1: %v — L1 feed disabled\n", err)
 		return
 	}
-	defer closeNflogSocket(fd)
+	defer r.close()
+
+	// Unblock the pending Recvfrom when the agent stops.
+	go func() {
+		<-ab.ctx.Done()
+		r.close()
+	}()
 
 	buf := make([]byte, 65536)
-
 	for {
-		select {
-		case <-ab.ctx.Done():
-			return
-		default:
-		}
-
-		n, err := readNflogMessage(fd, buf)
+		packets, err := r.readPacket(buf)
 		if err != nil {
+			if ab.ctx.Err() != nil {
+				return
+			}
 			continue
 		}
-
-		event := parseNflogEvent(buf[:n])
-		if event == nil {
-			continue
-		}
-		event.Layer = 1
-
-		// Non-blocking send.
-		select {
-		case ab.l1Events <- *event:
-		default:
-			// Drop if channel full — never block.
+		for _, p := range packets {
+			ev := nflogEvent(p)
+			select {
+			case ab.l1Events <- ev:
+			default:
+				// Drop if channel full — never block the kernel feed.
+			}
 		}
 	}
 }
@@ -188,28 +186,36 @@ func (ab *AgentBeta) l1NflogReader() {
 func (ab *AgentBeta) l2PerfReader() {
 	defer ab.wg.Done()
 
-	// In production: uses cilium/ebpf perf reader on the
-	// l2_events perf_event_array map.
-	// The TC BPF program writes events here.
+	if ab.config.L2PerfMapPath == "" {
+		fmt.Fprintf(os.Stderr, "agent-beta/L2: no perf map path configured — L2 feed disabled\n")
+		return
+	}
+	r, err := openL2Perf(ab.config.L2PerfMapPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent-beta/L2: %v — L2 feed disabled\n", err)
+		return
+	}
+	defer r.close()
+
+	// Unblock the pending perf read when the agent stops.
+	go func() {
+		<-ab.ctx.Done()
+		r.close()
+	}()
 
 	for {
-		select {
-		case <-ab.ctx.Done():
-			return
-		default:
-		}
-
-		// Read perf events from Layer 2 TC BPF program.
-		event, err := readL2PerfEvent(ab.config.L2PerfMapPath)
+		ev, err := r.nextEvent()
 		if err != nil {
-			time.Sleep(100 * time.Millisecond)
+			if ab.ctx.Err() != nil {
+				return
+			}
+			// Transient perf error — back off briefly, then continue.
+			time.Sleep(time.Second)
 			continue
 		}
 
-		event.Layer = 2
-
 		select {
-		case ab.l2Events <- *event:
+		case ab.l2Events <- ev:
 		default:
 		}
 	}
@@ -220,6 +226,13 @@ func (ab *AgentBeta) l2PerfReader() {
 func (ab *AgentBeta) l3DropPoller() {
 	defer ab.wg.Done()
 
+	if ab.config.L3DropMapPath == "" {
+		fmt.Fprintf(os.Stderr, "agent-beta/L3: no drop map path configured — L3 feed disabled\n")
+		return
+	}
+
+	// prev holds the last-seen per-IP totals so only new drops are emitted.
+	prev := make(map[string]uint64)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -228,7 +241,7 @@ func (ab *AgentBeta) l3DropPoller() {
 		case <-ab.ctx.Done():
 			return
 		case <-ticker.C:
-			drops, err := pollL3DropCounters(ab.config.L3DropMapPath)
+			drops, err := pollL3Drops(ab.config.L3DropMapPath, prev)
 			if err != nil {
 				continue
 			}
@@ -260,38 +273,35 @@ func (ab *AgentBeta) l3DropPoller() {
 func (ab *AgentBeta) l4AuditReader() {
 	defer ab.wg.Done()
 
-	// Open audit netlink socket for LSM events.
-	// In production: uses a raw netlink socket for audit messages.
-	fd, err := openAuditSocket()
+	r, err := openAuditNetlink()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-beta/L4: audit socket: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agent-beta/L4: %v — L4 feed disabled\n", err)
 		return
 	}
-	defer closeAuditSocket(fd)
+	defer r.close()
+
+	// Unblock the pending Recvfrom when the agent stops.
+	go func() {
+		<-ab.ctx.Done()
+		r.close()
+	}()
 
 	buf := make([]byte, 8192)
-
 	for {
-		select {
-		case <-ab.ctx.Done():
-			return
-		default:
-		}
-
-		n, err := readAuditMessage(fd, buf)
+		events, err := r.readMessage(buf)
 		if err != nil {
+			if ab.ctx.Err() != nil {
+				return
+			}
 			continue
 		}
 
-		event := parseAuditEvent(buf[:n])
-		if event == nil {
-			continue
-		}
-		event.Layer = 4
-
-		select {
-		case ab.l4Events <- *event:
-		default:
+		for _, e := range events {
+			le := auditLayerEvent(e)
+			select {
+			case ab.l4Events <- *le:
+			default:
+			}
 		}
 	}
 }
@@ -486,8 +496,6 @@ func (ab *AgentBeta) processL4Event(event LayerEvent) {
 // --- Proactive Response Trigger ---
 // Called periodically by the correlator.
 
-
-
 // --- Alert Sending ---
 
 func (ab *AgentBeta) sendAlert(alert Alert) {
@@ -508,63 +516,22 @@ func (ab *AgentBeta) sendAlert(alert Alert) {
 		return
 	}
 
-	header := fmt.Sprintf("BETA:%d:", len(data))
-	_, _ = ab.alertConn.Write([]byte(header))
-	// Ignore errors on the second write, just try our best.
-	_, _ = ab.alertConn.Write(data)
+	// Single write: "BETA:<len>:<json>". Two Writes risk the header and
+	// the payload being split across reads on a datagram socket, which
+	// breaks the length-framed protocol the orchestrator parses.
+	frame := append([]byte(fmt.Sprintf("BETA:%d:", len(data))), data...)
+	if _, err := ab.alertConn.Write(frame); err != nil {
+		// Drop the dead connection so the next alert reconnects.
+		ab.alertConn.Close()
+		ab.alertConn = nil
+	}
 }
 
-// --- Platform abstraction stubs ---
-// These would use actual netlink/BPF libraries in production.
-
-func openNflogSocket(group uint16) (int, error) {
-	// Production: use raw netlink socket with NFNL_SUBSYS_ULOG.
-	return 0, nil
-}
-
-func closeNflogSocket(fd int) {}
-
-func readNflogMessage(fd int, buf []byte) (int, error) {
-	// Production: read from netlink fd.
-	time.Sleep(100 * time.Millisecond)
-	return 0, fmt.Errorf("stub")
-}
-
-func parseNflogEvent(data []byte) *LayerEvent {
-	return nil
-}
-
-func readL2PerfEvent(mapPath string) (*LayerEvent, error) {
-	// Production: use cilium/ebpf perf.Reader.
-	time.Sleep(100 * time.Millisecond)
-	return nil, fmt.Errorf("stub")
-}
-
+// l3DropStats is the per-IP drop aggregate used by the L3 poller.
 type l3DropStats struct {
 	Count       uint64
 	LastDstPort uint16
 	LastProto   uint8
-}
-
-func pollL3DropCounters(mapPath string) (map[string]l3DropStats, error) {
-	// Production: iterate BPF map.
-	return nil, fmt.Errorf("stub")
-}
-
-func openAuditSocket() (int, error) {
-	// Production: open NETLINK_AUDIT socket.
-	return 0, nil
-}
-
-func closeAuditSocket(fd int) {}
-
-func readAuditMessage(fd int, buf []byte) (int, error) {
-	time.Sleep(100 * time.Millisecond)
-	return 0, fmt.Errorf("stub")
-}
-
-func parseAuditEvent(data []byte) *LayerEvent {
-	return nil
 }
 
 func appendUnique(slice []string, item string) []string {

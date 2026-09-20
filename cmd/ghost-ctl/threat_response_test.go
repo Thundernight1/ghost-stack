@@ -227,3 +227,94 @@ func TestAppendAudit_WritesValidJSONLine(t *testing.T) {
 		t.Fatalf("timestamp drift: got %s", back.Timestamp.Format(time.RFC3339Nano))
 	}
 }
+
+func TestExtractFrame_Single(t *testing.T) {
+	frame, rest, ok := extractFrame([]byte(`BETA:15:{"a":"b","c":1}`))
+	if !ok {
+		t.Fatal("expected complete frame")
+	}
+	if string(frame) != `{"a":"b","c":1}` {
+		t.Fatalf("frame = %q", frame)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("rest = %q, want empty", rest)
+	}
+}
+
+func TestExtractFrame_Coalesced(t *testing.T) {
+	buf := []byte(`BETA:2:{}` + `BETA:7:{"x":1}`)
+	var frames [][]byte
+	for {
+		f, rest, ok := extractFrame(buf)
+		if !ok {
+			break
+		}
+		frames = append(frames, f)
+		buf = rest
+	}
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames, want 2", len(frames))
+	}
+	if string(frames[0]) != "{}" || string(frames[1]) != `{"x":1}` {
+		t.Fatalf("frames = %q", frames)
+	}
+}
+
+func TestExtractFrame_SplitReads(t *testing.T) {
+	full := []byte(`BETA:15:{"a":"b","c":1}`)
+	var buf []byte
+	var got []byte
+	// Feed byte-by-byte, like a fragmented socket read.
+	for i := 0; i < len(full); i++ {
+		buf = append(buf, full[i])
+		for {
+			f, rest, ok := extractFrame(buf)
+			if !ok {
+				break
+			}
+			got = f
+			buf = rest
+		}
+	}
+	if string(got) != `{"a":"b","c":1}` {
+		t.Fatalf("reassembled = %q", got)
+	}
+}
+
+func TestExtractFrame_IncompleteWaits(t *testing.T) {
+	_, _, ok := extractFrame([]byte(`BETA:100:{"par`))
+	if ok {
+		t.Fatal("incomplete frame must not be reported complete")
+	}
+	_, _, ok = extractFrame([]byte(`BETA:1`))
+	if ok {
+		t.Fatal("incomplete header must not be reported complete")
+	}
+}
+
+func TestExtractFrame_CorruptHeaderResyncs(t *testing.T) {
+	// Garbage with a bad length, followed by a valid frame.
+	buf := []byte(`BETA:xx:garbage` + `BETA:2:{}`)
+	var frames [][]byte
+	for len(buf) > 0 && len(frames) < 10 {
+		f, rest, ok := extractFrame(buf)
+		if ok {
+			frames = append(frames, f)
+		}
+		if len(rest) >= len(buf) {
+			break // no progress — need more data
+		}
+		buf = rest
+	}
+	if len(frames) != 1 || string(frames[0]) != "{}" {
+		t.Fatalf("frames = %q, want one valid frame", frames)
+	}
+}
+
+func TestExtractFrame_OversizeRejected(t *testing.T) {
+	// Length field larger than maxFrameSize must not allocate/wait.
+	_, _, ok := extractFrame([]byte(`BETA:99999999:{}`))
+	if ok {
+		t.Fatal("oversize frame must be rejected")
+	}
+}

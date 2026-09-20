@@ -10,16 +10,24 @@
 //	ghost-ctl hierarchy show — Display the department hierarchy tree
 //	ghost-ctl audit-trail    — View the append-only audit trail
 //
-// All orchestrator actions are append-only logged to an immutable
-// partition (separate from container storage).
+// All orchestrator actions are append-only logged (hash-chained, fsync'd,
+// optional chattr +a) to a dedicated directory separate from container
+// storage. "Immutable" is not claimed: root can rotate the log via the
+// rename-based logrotate config, and each rotated segment stays
+// self-verifying through its AUDIT_CHAIN_ROTATED genesis entry.
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -27,6 +35,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -70,9 +79,19 @@ const (
 // (not consts) so tests in this package can redirect them at t.TempDir()
 // to avoid touching the host filesystem.
 var (
-	auditLogPath = "/var/lib/ghost-stack/audit/audit.log"
-	basePath     = "/var/lib/ghost-stack"
+	auditLogPath = ghostEnvOr("GHOST_AUDIT_PATH", "/var/lib/ghost-stack/audit/audit.log")
+	basePath     = ghostEnvOr("GHOST_BASE_PATH", "/var/lib/ghost-stack")
 )
+
+// ghostEnvOr returns the environment variable or the default. Defined here
+// (before its first use in the var block above) so on-disk paths honor the
+// systemd unit's Environment= directives.
+func ghostEnvOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // deptNamePattern restricts department names to a safe subset so they
 // cannot smuggle whitespace, shell metacharacters, or path separators
@@ -80,6 +99,9 @@ var (
 var deptNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // AuditEntry represents an append-only audit log entry.
+// PrevHash chains each entry to the previous one (SHA-256 hex), giving the
+// log tamper-evidence: any modification of history breaks the chain, which
+// `ghost-ctl audit-trail --verify` detects.
 type AuditEntry struct {
 	Timestamp time.Time              `json:"timestamp"`
 	Action    string                 `json:"action"`
@@ -87,12 +109,18 @@ type AuditEntry struct {
 	DeptID    int                    `json:"dept_id,omitempty"`
 	Details   map[string]interface{} `json:"details,omitempty"`
 	Result    string                 `json:"result"`
+	PrevHash  string                 `json:"prev_hash,omitempty"`
 }
 
 // Global state.
 var (
 	hierarchyTree *hierarchy.HierarchyTree
 	deptManager   *namespace.DepartmentManager
+
+	// sessionMgr is the orchestrator's auth session manager. It is created
+	// once in initialize() and used by the daemon (token rotation, expiry
+	// cleanup) and the `auth` commands — never discarded.
+	sessionMgr *auth.SessionManager
 
 	keyVault       *db.KeyVault
 	ed25519PubKey  ed25519.PublicKey
@@ -102,11 +130,37 @@ var (
 	// Gap 3: IP address management to prevent collisions.
 	ipam *IPAM
 	// Gap 5: Proactive threat response (AGENT-BETA → L3 XDP auto-block).
+	// threatHandler is created and started ONLY by the daemon
+	// (startThreatListener); short-lived CLI commands never open the
+	// alert socket.
 	threatHandler *ThreatResponseHandler
 	l3Manager     *layer3.AllowlistManager
+
+	// initOnce makes initialize() idempotent: repeated calls return the
+	// first call's result without re-running subsystem bring-up.
+	initOnce sync.Once
+	initErr  error
+
+	// xdpObjectPath is the compiled Layer 3 XDP program. The attach is
+	// best-effort: without it the allowlist still works in-memory.
+	xdpObjectPath = "/opt/ghost-stack/bpf/layer3_invisible.bpf.o"
 )
 
 func main() {
+	// Re-exec target for department containers (see namespace.ContainerInit).
+	// SpawnDepartment starts /proc/self/exe with argv [..., "container-init"]
+	// and CLONE_NEW* flags; this branch runs inside the child's fresh
+	// namespaces and never touches daemon state — no initialize(), no
+	// listeners, no sessions. On success ContainerInit execs the department
+	// init and never returns.
+	if len(os.Args) > 1 && os.Args[1] == "container-init" {
+		if err := namespace.ContainerInit(); err != nil {
+			fmt.Fprintf(os.Stderr, "ghost-ctl container-init: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0) // unreachable on success
+	}
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -172,6 +226,13 @@ func main() {
 	case "audit-trail":
 		cmdAuditTrail()
 
+	case "auth":
+		if len(os.Args) >= 3 && os.Args[2] == "status" {
+			cmdAuthStatus()
+		} else {
+			printUsage()
+		}
+
 	case "self-check":
 		// systemd ExecStartPre=: exit fast with a clear code (see
 		// cmdSelfCheck contract for code meanings).
@@ -194,7 +255,17 @@ func main() {
 }
 
 // initialize sets up all subsystems including Gap 2-5 components.
+// It is idempotent: the first call runs the full bring-up, later calls
+// return the first call's result without repeating any work.
 func initialize() error {
+	initOnce.Do(func() {
+		initErr = initializeOnce()
+	})
+	return initErr
+}
+
+// initializeOnce performs the actual one-time subsystem bring-up.
+func initializeOnce() error {
 	var err error
 
 	// Initialize hierarchy tree.
@@ -206,12 +277,12 @@ func initialize() error {
 	// Initialize department manager.
 	deptManager = namespace.NewDepartmentManager(basePath, hierarchyTree)
 
-	// Initialize session manager.
-	sessionManager, err := auth.NewSessionManager()
+	// Initialize session manager. Stored in the global sessionMgr — shared
+	// by the daemon (rotation/cleanup loops) and the `auth` commands.
+	sessionMgr, err = auth.NewSessionManager()
 	if err != nil {
 		return fmt.Errorf("session manager: %w", err)
 	}
-	_ = sessionManager
 
 	// Initialize key vault (Gap 4: host-only key management).
 	keyVault, err = db.NewKeyVault(basePath + "/vault")
@@ -237,12 +308,41 @@ func initialize() error {
 		// Warning already printed inside initIPAM.
 	}
 
-	// --- Gap 5: Initialize Layer 3 manager and threat response handler ---
+	// --- Gap 5: Initialize Layer 3 manager ---
+	// NOTE: the AGENT-BETA threat listener is NOT started here — see
+	// startThreatListener(), which the daemon calls. Short-lived CLI
+	// commands share the allowlist manager in-memory but never open the
+	// alert socket.
 	l3Manager = layer3.NewAllowlistManager("eth0", ed25519PubKey)
 
+	// Attach the Layer 3 XDP program if a compiled object is present.
+	// Best-effort: in dev/CI environments there is no BPF object and no
+	// privileges; the allowlist manager still works in-memory and the
+	// orchestrator keeps running. Production needs CAP_BPF (or root) and
+	// the compiled object at xdpObjectPath — see systemd units.
+	if objPath := ghostEnvOr("GHOST_XDP_OBJECT", xdpObjectPath); objPath != "" {
+		if _, statErr := os.Stat(objPath); statErr == nil {
+			if err := l3Manager.LoadAndAttach(objPath); err != nil {
+				fmt.Fprintf(os.Stderr, "ghost-ctl: XDP attach failed (continuing without kernel enforcement): %v\n", err)
+			} else {
+				fmt.Println("ghost-ctl: XDP program attached")
+			}
+		}
+	}
+
+	return nil
+}
+
+// startThreatListener creates and starts the AGENT-BETA threat response
+// listener. Called ONLY by the daemon: short-lived CLI commands must not
+// open (and thereby steal) the alert socket.
+func startThreatListener() error {
+	if threatHandler != nil {
+		return nil // already running
+	}
 	threatHandler = NewThreatResponseHandler(
 		ThreatResponseConfig{
-			AlertSocketPath:      alertSocketPath,
+			AlertSocketPath:      ghostEnvOr("GHOST_ALERT_SOCKET", alertSocketPath),
 			ThreatScoreThreshold: 80,
 			RequireL2Hits:        true,
 			PrivateKey:           ed25519PrivKey,
@@ -251,13 +351,10 @@ func initialize() error {
 		l3Manager,
 		appendAudit, // Wire audit logging into threat response.
 	)
-
-	// Start the threat response listener (non-blocking).
 	if err := threatHandler.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-ctl: threat response start failed: %v\n", err)
-		os.Exit(1)
+		threatHandler = nil
+		return err
 	}
-
 	return nil
 }
 
@@ -499,6 +596,19 @@ func cmdHierarchyShow() {
 }
 
 func cmdAuditTrail() {
+	// --verify replays the hash chain and reports tampering.
+	for _, a := range os.Args[2:] {
+		if a == "--verify" {
+			n, err := verifyAuditChain()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "audit-trail: VERIFY FAILED after %d entries: %v\n", n, err)
+				os.Exit(1)
+			}
+			fmt.Printf("audit-trail: chain verified — %d entries, no tampering detected\n", n)
+			return
+		}
+	}
+
 	fmt.Println("\n[GHOST-CTL] Audit Trail (append-only)")
 	fmt.Println("═══════════════════════════════════")
 
@@ -529,7 +639,16 @@ func cmdAuditTrail() {
 	fmt.Println("═══════════════════════════════════")
 }
 
-// --- Utility functions ---
+// cmdAuthStatus reports auth subsystem state: active session count and
+// registered device count. Proves the global session manager is live and
+// wired into the command path (previously constructed and discarded).
+func cmdAuthStatus() {
+	fmt.Println("\n[GHOST-CTL] Auth Status")
+	fmt.Println("═══════════════════════")
+	fmt.Printf("  active sessions : %d\n", sessionMgr.ActiveSessionCount())
+	fmt.Printf("  registered devs : %d\n", sessionMgr.RegisteredDeviceCount())
+	fmt.Println("═══════════════════════")
+}
 
 func printUsage() {
 	fmt.Printf(banner, version)
@@ -543,7 +662,8 @@ Commands:
   dept snapshot <ID>                            Capture department state snapshot
   dept status <ID>                              Show department status
   hierarchy show                                Display hierarchy tree
-  audit-trail                                   View append-only audit log
+  audit-trail [--verify]                        View append-only audit log / verify hash chain
+  auth status                                   Show auth session/device counts
   version                                       Show version
   help                                          Show this help
 
@@ -661,10 +781,41 @@ func cmdSelfCheck() int {
 // socket, drains the threat handler, and writes the final audit
 // entry.
 func cmdDaemon() {
+	// initialize() was already run by main() before dispatch; the
+	// sync.Once inside makes this second call a cheap no-op.
 	if err := initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "ghost-ctl: daemon initialization failed: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Start the AGENT-BETA alert socket listener — daemon only.
+	if err := startThreatListener(); err != nil {
+		fmt.Fprintf(os.Stderr, "ghost-ctl: threat listener failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Session maintenance loops (rotation + expiry cleanup).
+	stopSessions := make(chan struct{})
+	go sessionMgr.StartTokenRotationLoop(stopSessions)
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopSessions:
+				return
+			case <-ticker.C:
+				if n := sessionMgr.CleanupExpiredSessions(); n > 0 {
+					fmt.Printf("daemon: cleaned up %d expired sessions\n", n)
+				}
+			}
+		}
+	}()
+
+	// Read-only status API on localhost for the dashboard and operators.
+	statusAddr := ghostEnvOr("GHOST_STATUS_ADDR", "127.0.0.1:9090")
+	stopStatus := make(chan struct{})
+	go serveStatusAPI(statusAddr, stopStatus)
 
 	// Notify systemd Type=notify readiness.
 	sdNotify("READY=1\n")
@@ -680,6 +831,15 @@ func cmdDaemon() {
 	// Trigger the threat handler's accept loop to exit cleanly.
 	if threatHandler != nil {
 		threatHandler.Stop()
+	}
+	close(stopSessions)
+	close(stopStatus)
+
+	// Detach the XDP program on graceful shutdown.
+	if l3Manager != nil && l3Manager.IsAttached() {
+		if err := l3Manager.Detach(); err != nil {
+			fmt.Fprintf(os.Stderr, "daemon: XDP detach: %v\n", err)
+		}
 	}
 
 	// Write final audit entry so operators know the daemon exited
@@ -929,22 +1089,183 @@ func parseTier(s string) hierarchy.Tier {
 	}
 }
 
+var (
+	// auditMu serializes audit writes so the hash chain stays ordered.
+	auditMu sync.Mutex
+	// lastAuditHash is the SHA-256 hex of the most recently appended
+	// audit line. Each entry carries PrevHash, forming a tamper-evident
+	// chain verifiable with `ghost-ctl audit-trail --verify`.
+	lastAuditHash string
+	// lastAuditHashLoaded marks whether lastAuditHash was seeded from the
+	// tail of the existing log file.
+	lastAuditHashLoaded bool
+	// auditDev/auditIno/auditSize identify the log file last written to.
+	// An inode change or size shrink means logrotate renamed the file
+	// (or it was truncated) — the next write starts a new chain segment
+	// with an AUDIT_CHAIN_ROTATED genesis entry linking to the old tail.
+	auditDev  uint64
+	auditIno  uint64
+	auditSize int64
+)
+
+// appendAudit appends one JSON audit line, chaining it to the previous
+// entry via SHA-256 (PrevHash). The file is opened O_APPEND-only with
+// 0600; there is no truncation path anywhere in this codebase —
+// deploy.sh installs a rename-based (never copytruncate) logrotate config,
+// and rotation is detected via inode/size so the new file stays
+// self-verifying through a genesis entry.
 func appendAudit(entry AuditEntry) {
 	if err := os.MkdirAll(basePath+"/audit", 0o700); err != nil {
 		return
 	}
 
-	data, err := json.Marshal(entry)
-	if err != nil {
+	auditMu.Lock()
+	defer auditMu.Unlock()
+
+	if !lastAuditHashLoaded {
+		lastAuditHash = readAuditTailHash()
+		lastAuditHashLoaded = true
+		auditDev, auditIno, auditSize = statAuditFile()
+	}
+
+	// Detect external rotation/truncation since our last write.
+	if dev, ino, size := statAuditFile(); dev != auditDev || ino != auditIno || size < auditSize {
+		genesis := AuditEntry{
+			Timestamp: time.Now().UTC(),
+			Action:    "AUDIT_CHAIN_ROTATED",
+			Actor:     "orchestrator",
+			Details:   map[string]interface{}{"prev_tail_hash": lastAuditHash},
+			Result:    "SUCCESS",
+			PrevHash:  "",
+		}
+		if err := writeAuditLine(genesis); err != nil {
+			return
+		}
+		auditDev, auditIno, auditSize = dev, ino, size
+	}
+
+	entry.PrevHash = lastAuditHash
+	if err := writeAuditLine(entry); err != nil {
 		return
 	}
+	auditDev, auditIno, auditSize = statAuditFile()
+}
+
+// writeAuditLine marshals one entry, appends it durably (fsync), and
+// advances lastAuditHash. Callers must hold auditMu.
+func writeAuditLine(entry AuditEntry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
 
 	f, err := os.OpenFile(auditLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return err
+	}
+	// Best-effort durability: sync each entry so a crash cannot silently
+	// lose the tail of the audit trail.
+	_, werr := f.Write(data)
+	serr := f.Sync()
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	if serr != nil {
+		return serr
+	}
+	if cerr != nil {
+		return cerr
+	}
+
+	sum := sha256.Sum256(data)
+	lastAuditHash = hex.EncodeToString(sum[:])
+	return nil
+}
+
+// statAuditFile returns the device, inode, and size of the audit log.
+// Missing file → zeros (treated as "rotated" so the first write after
+// logrotate starts a fresh, self-verifying chain segment).
+func statAuditFile() (dev, ino uint64, size int64) {
+	st, err := os.Stat(auditLogPath)
+	if err != nil {
+		return 0, 0, 0
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+		dev, ino = uint64(sys.Dev), uint64(sys.Ino)
+	}
+	return dev, ino, st.Size()
+}
+
+// readAuditTailHash returns the SHA-256 hex of the last non-empty line of
+// the audit log, or "" when the log does not exist yet.
+func readAuditTailHash() string {
+	f, err := os.Open(auditLogPath)
+	if err != nil {
+		return ""
 	}
 	defer f.Close()
 
-	_, _ = f.Write(data)
-	_, _ = f.Write([]byte("\n"))
+	// Read the tail (last 64 KiB is plenty for one JSON line).
+	const tailSize = 64 * 1024
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	off := int64(0)
+	if st.Size() > tailSize {
+		off = st.Size() - tailSize
+	}
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return ""
+	}
+	lines := bytes.Split(bytes.TrimRight(buf, "\n"), []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if len(bytes.TrimSpace(lines[i])) == 0 {
+			continue
+		}
+		sum := sha256.Sum256(append(lines[i], '\n'))
+		return hex.EncodeToString(sum[:])
+	}
+	return ""
+}
+
+// verifyAuditChain replays the audit log and checks every PrevHash link.
+// Returns the number of verified entries, or an error naming the first
+// broken link.
+func verifyAuditChain() (int, error) {
+	f, err := os.Open(auditLogPath)
+	if err != nil {
+		return 0, fmt.Errorf("open audit log: %w", err)
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	wantPrev := ""
+	count := 0
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		line := sc.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var entry AuditEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return count, fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
+		}
+		if entry.PrevHash != wantPrev {
+			return count, fmt.Errorf("line %d: hash chain broken (action=%s)", lineNo, entry.Action)
+		}
+		sum := sha256.Sum256(append(append([]byte{}, line...), '\n'))
+		wantPrev = hex.EncodeToString(sum[:])
+		count++
+	}
+	if err := sc.Err(); err != nil {
+		return count, fmt.Errorf("read audit log: %w", err)
+	}
+	return count, nil
 }

@@ -51,9 +51,14 @@ jobs:
         run: |
           nft --check -f firewall/layer1/layer1_decoy.nft || true
 
-      - name: 4. Security Scan
+      - name: 4. Security Scan (gosec + staticcheck)
         run: |
-          echo "Executing isolated static security analysis..."
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "--- gosec ---"
+          gosec -fmt=text ./...
+          echo "--- staticcheck ---"
+          staticcheck ./...
 
       - name: 5. Unit Tests
         run: |
@@ -66,10 +71,12 @@ jobs:
           go build -o build/agent-beta ./cmd/agent-beta
 
       - name: 7. SonarCloud Code Analysis
+        # Runs only when SONAR_TOKEN is configured; otherwise the step is
+        # skipped instead of pretending to analyze.
+        if: ${{ env.SONAR_TOKEN != '' }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          echo "Running SonarCloud static analysis tracking..."
+        uses: SonarSource/sonarqube-scan-action@v4
 
       - name: 8. Build Check Status
         run: |

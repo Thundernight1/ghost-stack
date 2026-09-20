@@ -13,10 +13,13 @@ PartOf=ghost-orchestrator.service
 
 [Service]
 Type=simple
-ExecStart=/opt/ghost-stack/bin/agent-alpha \
-    --dept-id=%i \
-    --bpf-object=/opt/ghost-stack/bpf/alpha.bpf.o \
-    --alert-socket=/var/run/ghost-stack/alert.sock
+# agent-alpha takes NO command-line flags — all configuration is via
+# environment (see cmd/agent-alpha/main.go). %i is the systemd template
+# instance (the department ID).
+ExecStart=/opt/ghost-stack/bin/agent-alpha
+Environment=GHOST_DEPT_ID=%i
+Environment=GHOST_BPF_OBJECT=/opt/ghost-stack/bpf/alpha.bpf.o
+Environment=GHOST_ALERT_SOCKET=/var/run/ghost-stack/alert.sock
 Restart=on-failure
 RestartSec=3
 

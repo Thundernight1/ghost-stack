@@ -15,6 +15,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -105,6 +106,14 @@ type SessionManager struct {
 	registeredEmails map[string]bool
 	// deviceToUser maps DeviceFingerprint to UserEmail for device binding.
 	deviceToUser map[string]string
+
+	// otpSender is the delivery channel for OTP codes (see otp.go).
+	otpSender OTPSender
+	// pendingWebAuthn maps DeviceFingerprint to a pending login challenge.
+	pendingWebAuthn map[string]*webAuthnChallenge
+	// webAuthnRPID / webAuthnOrigin configure the Relying Party identity.
+	webAuthnRPID   string
+	webAuthnOrigin string
 }
 
 // NewSessionManager creates a new session manager with random encryption keys.
@@ -149,51 +158,11 @@ func (sm *SessionManager) RegisterDevice(email string, attestation *FIDO2Attesta
 	return nil
 }
 
-// StartAuthentication begins the dual-factor authentication flow.
-// Step 1: Verify FIDO2 hardware token attestation.
-// Step 2: Send OTP to company email.
-// Returns an OTP challenge that must be completed.
-func (sm *SessionManager) StartAuthentication(deviceFingerprint string) (*OTPChallenge, error) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// Verify device is registered.
-	attestation, exists := sm.registeredDevices[deviceFingerprint]
-	if !exists {
-		return nil, fmt.Errorf("ghost-stack/auth: HARD BLOCK — device %s is not company-registered", deviceFingerprint)
-	}
-
-	// Verify FIDO2 attestation is valid.
-	if err := sm.verifyFIDO2Attestation(attestation); err != nil {
-		return nil, fmt.Errorf("ghost-stack/auth: FIDO2 attestation verification failed: %w", err)
-	}
-
-	// Get associated email.
-	email, exists := sm.deviceToUser[deviceFingerprint]
-	if !exists {
-		return nil, fmt.Errorf("ghost-stack/auth: device not bound to any user")
-	}
-
-	// Generate OTP.
-	otpCode, err := generateOTP()
-	if err != nil {
-		return nil, fmt.Errorf("ghost-stack/auth: OTP generation failed: %w", err)
-	}
-
-	challenge := &OTPChallenge{
-		Email:     email,
-		Code:      otpCode,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		Verified:  false,
-	}
-
-	sm.pendingOTPs[email] = challenge
-
-	// In production: send OTP via internal SMTP relay restricted to company domain.
-	// The DNS + nftables egress filter in the network namespace blocks external providers.
-	return challenge, nil
-}
+// NOTE: the old StartAuthentication(deviceFingerprint) entry point was removed.
+// It issued an OTP after only a structural attestation check, without any
+// hardware proof — anyone who knew a device fingerprint could trigger an OTP.
+// Logins must go through the real cryptographic ceremony:
+// BeginWebAuthnAuth + CompleteWebAuthnAuth (see webauthn.go).
 
 // CompleteAuthentication verifies the OTP and issues an encrypted session token.
 // The token is cryptographically bound to the FIDO2 device fingerprint.
@@ -217,7 +186,8 @@ func (sm *SessionManager) CompleteAuthentication(email, otpCode, deviceFingerpri
 		return nil, fmt.Errorf("ghost-stack/auth: OTP expired")
 	}
 
-	if challenge.Code != otpCode {
+	// Constant-time comparison — no timing oracle for guessing the code.
+	if subtle.ConstantTimeCompare([]byte(challenge.Code), []byte(otpCode)) != 1 {
 		return nil, fmt.Errorf("ghost-stack/auth: invalid OTP")
 	}
 
@@ -268,8 +238,15 @@ func (sm *SessionManager) ValidateSession(tokenID, deviceFingerprint string) (*S
 
 	// Verify token integrity via HMAC.
 	expectedHMAC := sm.computeTokenHMAC(token)
-	if token.HMAC != expectedHMAC {
+	if !hmac.Equal([]byte(token.HMAC), []byte(expectedHMAC)) {
 		return nil, fmt.Errorf("ghost-stack/auth: token integrity check failed — possible tampering")
+	}
+
+	// Verify the encrypted payload matches the plaintext envelope. HMAC
+	// alone cannot catch a token whose envelope fields were swapped
+	// against a different valid encrypted payload.
+	if err := sm.verifyTokenPayload(token); err != nil {
+		return nil, err
 	}
 
 	return token, nil
@@ -340,7 +317,29 @@ func (sm *SessionManager) ActiveSessionCount() int {
 	return len(sm.activeSessions)
 }
 
+// RegisteredDeviceCount returns the number of FIDO2 devices registered.
+func (sm *SessionManager) RegisteredDeviceCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return len(sm.registeredDevices)
+}
+
 // --- Internal methods ---
+
+// sessionTokenPayload is the plaintext body sealed inside EncryptedPayload.
+// It mirrors the security-relevant envelope fields of SessionToken so
+// ValidateSession can prove the encrypted body and the envelope belong
+// to the same token.
+type sessionTokenPayload struct {
+	TokenID           string `json:"token_id"`
+	DeptID            int    `json:"dept_id"`
+	UserEmail         string `json:"user_email"`
+	Tier              string `json:"tier"`
+	DeviceFingerprint string `json:"device_fingerprint"`
+	IssuedAt          int64  `json:"issued_at"`
+	ExpiresAt         int64  `json:"expires_at"`
+	Nonce             string `json:"nonce"`
+}
 
 // createSessionToken generates an AES-256-GCM encrypted session token
 // bound to a FIDO2 device fingerprint.
@@ -355,16 +354,7 @@ func (sm *SessionManager) createSessionToken(email, deviceFingerprint string, de
 	now := time.Now()
 
 	// Build token payload.
-	payload := struct {
-		TokenID           string `json:"token_id"`
-		DeptID            int    `json:"dept_id"`
-		UserEmail         string `json:"user_email"`
-		Tier              string `json:"tier"`
-		DeviceFingerprint string `json:"device_fingerprint"`
-		IssuedAt          int64  `json:"issued_at"`
-		ExpiresAt         int64  `json:"expires_at"`
-		Nonce             string `json:"nonce"`
-	}{
+	payload := sessionTokenPayload{
 		TokenID:           tokenID,
 		DeptID:            deptID,
 		UserEmail:         email,
@@ -455,51 +445,59 @@ func (sm *SessionManager) decryptAES256GCM(ciphertext []byte) ([]byte, error) {
 }
 
 // computeTokenHMAC computes HMAC-SHA256 of the token for integrity verification.
+// It covers every security-relevant field — including the authorization
+// fields DeptID/Tier and the rotation timestamp — so a token whose upper
+// fields were swapped (e.g. Tier ANALYST → ADMIN) while keeping the same
+// encrypted payload no longer verifies.
 func (sm *SessionManager) computeTokenHMAC(token *SessionToken) string {
 	h := hmac.New(sha256.New, sm.hmacKey[:])
 	h.Write([]byte(token.TokenID))
 	h.Write([]byte(token.UserEmail))
 	h.Write([]byte(token.FIDO2DeviceFingerprint))
+	h.Write([]byte(token.Tier))
 	h.Write([]byte(token.EncryptedPayload))
 
-	// Include timestamps.
+	// Include authorization and lifecycle fields.
 	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(token.DeptID))
+	h.Write(buf)
 	binary.BigEndian.PutUint64(buf, uint64(token.IssuedAt.Unix()))
 	h.Write(buf)
 	binary.BigEndian.PutUint64(buf, uint64(token.ExpiresAt.Unix()))
+	h.Write(buf)
+	binary.BigEndian.PutUint64(buf, uint64(token.RotatedAt.Unix()))
 	h.Write(buf)
 
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// verifyFIDO2Attestation validates a FIDO2 attestation.
-// In production, this verifies the attestation certificate chain,
-// signature counter (for clone detection), and AAGUID.
-func (sm *SessionManager) verifyFIDO2Attestation(attestation *FIDO2Attestation) error {
-	if len(attestation.CredentialID) == 0 {
-		return fmt.Errorf("empty credential ID")
+// verifyTokenPayload decrypts the token's encrypted payload and checks that
+// every security-relevant field matches the plaintext envelope. This closes
+// the gap where validation checked only the HMAC: a token whose envelope
+// fields were swapped against a different (valid) encrypted payload — or a
+// payload that was re-encrypted under a leaked master key — is rejected.
+func (sm *SessionManager) verifyTokenPayload(token *SessionToken) error {
+	raw, err := base64.StdEncoding.DecodeString(token.EncryptedPayload)
+	if err != nil {
+		return fmt.Errorf("ghost-stack/auth: token payload decode failed: %w", err)
 	}
-	if len(attestation.PublicKey) == 0 {
-		return fmt.Errorf("empty public key")
+	plaintext, err := sm.decryptAES256GCM(raw)
+	if err != nil {
+		return fmt.Errorf("ghost-stack/auth: token payload decrypt failed — possible tampering: %w", err)
 	}
-	if attestation.DeviceFingerprint == "" {
-		return fmt.Errorf("missing device fingerprint")
+	var p sessionTokenPayload
+	if err := json.Unmarshal(plaintext, &p); err != nil {
+		return fmt.Errorf("ghost-stack/auth: token payload corrupt: %w", err)
 	}
-
-	// Verify AAGUID is not all zeros (basic validity check).
-	allZero := true
-	for _, b := range attestation.AAGUID {
-		if b != 0 {
-			allZero = false
-			break
-		}
+	if p.TokenID != token.TokenID ||
+		p.DeptID != token.DeptID ||
+		p.UserEmail != token.UserEmail ||
+		p.Tier != token.Tier ||
+		p.DeviceFingerprint != token.FIDO2DeviceFingerprint ||
+		p.IssuedAt != token.IssuedAt.Unix() ||
+		p.ExpiresAt != token.ExpiresAt.Unix() {
+		return fmt.Errorf("ghost-stack/auth: token payload does not match envelope — possible tampering")
 	}
-	if allZero {
-		return fmt.Errorf("invalid AAGUID (all zeros)")
-	}
-
-	// In production: verify attestation certificate chain, check CRL,
-	// validate signature counter is monotonically increasing.
 	return nil
 }
 

@@ -1,6 +1,10 @@
 package auth
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +19,7 @@ func TestNewSessionManager(t *testing.T) {
 	if sm == nil {
 		t.Fatal("expected non-nil SessionManager")
 	}
-	
+
 	// Verify keys are generated
 	zeroKey := [32]byte{}
 	if sm.masterKey == zeroKey {
@@ -91,57 +95,20 @@ func TestGenerateOTP(t *testing.T) {
 	}
 }
 
-func TestVerifyFIDO2Attestation(t *testing.T) {
-	sm, _ := NewSessionManager()
-
-	valid := &FIDO2Attestation{
-		CredentialID:      []byte("cred"),
-		PublicKey:         []byte("pub"),
-		DeviceFingerprint: "fp",
-		AAGUID:            [16]byte{1}, // Not all zeros
-	}
-
-	if err := sm.verifyFIDO2Attestation(valid); err != nil {
-		t.Errorf("expected valid attestation to pass, got: %v", err)
-	}
-
-	invalidAAGUID := &FIDO2Attestation{
-		CredentialID:      []byte("cred"),
-		PublicKey:         []byte("pub"),
-		DeviceFingerprint: "fp",
-		AAGUID:            [16]byte{}, // All zeros
-	}
-	if err := sm.verifyFIDO2Attestation(invalidAAGUID); err == nil {
-		t.Error("expected error for all-zero AAGUID")
-	}
-}
-
 func TestAuthenticationFlow(t *testing.T) {
 	sm, _ := NewSessionManager()
 
 	email := "bob@xio.cybersurhub.com"
 	fingerprint := "hw-uuid-bob-999"
 
-	// 1. Register
-	att := &FIDO2Attestation{
-		CredentialID:      []byte("cred1"),
-		PublicKey:         []byte("pub1"),
-		AAGUID:            [16]byte{1},
-		DeviceFingerprint: fingerprint,
-	}
-	_ = sm.RegisterDevice(email, att)
+	// 1. Register (real P-256 key + COSE public key).
+	priv, credID, sender := registerCeremonyDevice(t, sm, email, fingerprint)
 
-	// 2. Start Auth
-	challenge, err := sm.StartAuthentication(fingerprint)
-	if err != nil {
-		t.Fatalf("StartAuthentication failed: %v", err)
-	}
-	if challenge.Email != email {
-		t.Errorf("challenge email = %q, want %q", challenge.Email, email)
-	}
+	// 2. Real WebAuthn ceremony → OTP delivered via sender.
+	otpCode := ceremonyOTP(t, sm, sender, priv, credID, fingerprint, 1)
 
 	// 3. Complete Auth
-	token, err := sm.CompleteAuthentication(email, challenge.Code, fingerprint, 10, "MANAGER")
+	token, err := sm.CompleteAuthentication(email, otpCode, fingerprint, 10, "MANAGER")
 	if err != nil {
 		t.Fatalf("CompleteAuthentication failed: %v", err)
 	}
@@ -168,19 +135,19 @@ func TestAuthenticationFlow(t *testing.T) {
 
 func TestTokenEncryptionCycle(t *testing.T) {
 	sm, _ := NewSessionManager()
-	
+
 	plaintext := []byte("secret payload")
-	
+
 	encrypted, err := sm.encryptAES256GCM(plaintext)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	decrypted, err := sm.decryptAES256GCM(encrypted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if string(decrypted) != string(plaintext) {
 		t.Errorf("decrypted %q != original %q", decrypted, plaintext)
 	}
@@ -190,9 +157,10 @@ func TestTokenEncryptionCycle(t *testing.T) {
 // Extended Security Tests
 // ═══════════════════════════════════════════════════════════
 
-// helper creates a SessionManager with a registered device and returns it along
-// with the OTP challenge. This avoids duplicating setup logic across tests.
-func setupAuthFlow(t *testing.T) (*SessionManager, *OTPChallenge, string, string) {
+// helper creates a SessionManager with a registered device, runs the real
+// WebAuthn ceremony, and returns the manager plus the OTP code as delivered
+// through the sender. This avoids duplicating setup logic across tests.
+func setupAuthFlow(t *testing.T) (*SessionManager, string, string, string) {
 	t.Helper()
 	sm, err := NewSessionManager()
 	if err != nil {
@@ -202,21 +170,9 @@ func setupAuthFlow(t *testing.T) (*SessionManager, *OTPChallenge, string, string
 	email := "operator@xio.cybersurhub.com"
 	fp := "hw-uuid-test-0001"
 
-	att := &FIDO2Attestation{
-		CredentialID:      []byte("cred-test"),
-		PublicKey:         []byte("pub-test"),
-		AAGUID:            [16]byte{0xDE, 0xAD},
-		DeviceFingerprint: fp,
-	}
-	if err := sm.RegisterDevice(email, att); err != nil {
-		t.Fatalf("RegisterDevice: %v", err)
-	}
-
-	challenge, err := sm.StartAuthentication(fp)
-	if err != nil {
-		t.Fatalf("StartAuthentication: %v", err)
-	}
-	return sm, challenge, email, fp
+	priv, credID, sender := registerCeremonyDevice(t, sm, email, fp)
+	otpCode := ceremonyOTP(t, sm, sender, priv, credID, fp, 1)
+	return sm, otpCode, email, fp
 }
 
 func TestCompleteAuthentication_WrongOTP(t *testing.T) {
@@ -232,14 +188,14 @@ func TestCompleteAuthentication_WrongOTP(t *testing.T) {
 }
 
 func TestCompleteAuthentication_ExpiredOTP(t *testing.T) {
-	sm, challenge, email, fp := setupAuthFlow(t)
+	sm, otpCode, email, fp := setupAuthFlow(t)
 
 	// Manually expire the OTP.
 	sm.mu.Lock()
 	sm.pendingOTPs[email].ExpiresAt = time.Now().Add(-1 * time.Minute)
 	sm.mu.Unlock()
 
-	_, err := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+	_, err := sm.CompleteAuthentication(email, otpCode, fp, 1, "ANALYST")
 	if err == nil {
 		t.Fatal("expected error for expired OTP")
 	}
@@ -249,9 +205,9 @@ func TestCompleteAuthentication_ExpiredOTP(t *testing.T) {
 }
 
 func TestCompleteAuthentication_ExternalEmail(t *testing.T) {
-	sm, challenge, _, fp := setupAuthFlow(t)
+	sm, otpCode, _, fp := setupAuthFlow(t)
 
-	_, err := sm.CompleteAuthentication("evil@attacker.com", challenge.Code, fp, 1, "ANALYST")
+	_, err := sm.CompleteAuthentication("evil@attacker.com", otpCode, fp, 1, "ANALYST")
 	if err == nil {
 		t.Fatal("expected error for external email")
 	}
@@ -261,9 +217,9 @@ func TestCompleteAuthentication_ExternalEmail(t *testing.T) {
 }
 
 func TestValidateSession_WrongDevice(t *testing.T) {
-	sm, challenge, email, fp := setupAuthFlow(t)
+	sm, otpCode, email, fp := setupAuthFlow(t)
 
-	token, err := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+	token, err := sm.CompleteAuthentication(email, otpCode, fp, 1, "ANALYST")
 	if err != nil {
 		t.Fatalf("CompleteAuthentication: %v", err)
 	}
@@ -278,9 +234,9 @@ func TestValidateSession_WrongDevice(t *testing.T) {
 }
 
 func TestValidateSession_TamperedHMAC(t *testing.T) {
-	sm, challenge, email, fp := setupAuthFlow(t)
+	sm, otpCode, email, fp := setupAuthFlow(t)
 
-	token, err := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+	token, err := sm.CompleteAuthentication(email, otpCode, fp, 1, "ANALYST")
 	if err != nil {
 		t.Fatalf("CompleteAuthentication: %v", err)
 	}
@@ -299,10 +255,41 @@ func TestValidateSession_TamperedHMAC(t *testing.T) {
 	}
 }
 
-func TestValidateSession_Expired(t *testing.T) {
-	sm, challenge, email, fp := setupAuthFlow(t)
+func TestValidateSession_TamperedPayload(t *testing.T) {
+	sm, _ := NewSessionManager()
+	priv, credID, sender := registerCeremonyDevice(t, sm, "dave@xio.cybersurhub.com", "fp-payload")
+	code := ceremonyOTP(t, sm, sender, priv, credID, "fp-payload", 1)
+	token, err := sm.CompleteAuthentication("dave@xio.cybersurhub.com", code, "fp-payload", 3, "ANALYST")
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	token, err := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+	// Attacker model: envelope privilege fields escalated and the HMAC
+	// recomputed (HMAC-key compromise, or a token-creation bug that sealed
+	// the wrong envelope). The encrypted payload still says ANALYST — the
+	// payload check must catch the envelope/payload mismatch.
+	tampered := *token
+	tampered.Tier = "ADMIN"
+	tampered.DeptID = 99
+	tampered.HMAC = sm.computeTokenHMAC(&tampered)
+	sm.activeSessions["tampered-payload"] = &tampered
+
+	if _, err := sm.ValidateSession("tampered-payload", "fp-payload"); err == nil {
+		t.Fatal("payload/envelope mismatch must be rejected")
+	} else if !strings.Contains(err.Error(), "payload") {
+		t.Errorf("error should mention payload, got: %v", err)
+	}
+
+	// Untouched token still validates.
+	if _, err := sm.ValidateSession(token.TokenID, "fp-payload"); err != nil {
+		t.Fatalf("valid token rejected: %v", err)
+	}
+}
+
+func TestValidateSession_Expired(t *testing.T) {
+	sm, otpCode, email, fp := setupAuthFlow(t)
+
+	token, err := sm.CompleteAuthentication(email, otpCode, fp, 1, "ANALYST")
 	if err != nil {
 		t.Fatalf("CompleteAuthentication: %v", err)
 	}
@@ -322,9 +309,9 @@ func TestValidateSession_Expired(t *testing.T) {
 }
 
 func TestRotateToken_Success(t *testing.T) {
-	sm, challenge, email, fp := setupAuthFlow(t)
+	sm, otpCode, email, fp := setupAuthFlow(t)
 
-	oldToken, err := sm.CompleteAuthentication(email, challenge.Code, fp, 5, "MANAGER")
+	oldToken, err := sm.CompleteAuthentication(email, otpCode, fp, 5, "MANAGER")
 	if err != nil {
 		t.Fatalf("CompleteAuthentication: %v", err)
 	}
@@ -362,9 +349,9 @@ func TestRotateToken_Success(t *testing.T) {
 }
 
 func TestRotateToken_Expired(t *testing.T) {
-	sm, challenge, email, fp := setupAuthFlow(t)
+	sm, otpCode, email, fp := setupAuthFlow(t)
 
-	token, err := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+	token, err := sm.CompleteAuthentication(email, otpCode, fp, 1, "ANALYST")
 	if err != nil {
 		t.Fatalf("CompleteAuthentication: %v", err)
 	}
@@ -397,23 +384,12 @@ func TestRevokeAllForDevice(t *testing.T) {
 	email := "multi@xio.cybersurhub.com"
 	fp := "hw-uuid-multi-device"
 
-	att := &FIDO2Attestation{
-		CredentialID:      []byte("cred-multi"),
-		PublicKey:         []byte("pub-multi"),
-		AAGUID:            [16]byte{0x01},
-		DeviceFingerprint: fp,
-	}
-	if err := sm.RegisterDevice(email, att); err != nil {
-		t.Fatalf("RegisterDevice: %v", err)
-	}
+	priv, credID, sender := registerCeremonyDevice(t, sm, email, fp)
 
 	// Create 3 sessions manually by doing full auth flow 3 times.
 	for i := 0; i < 3; i++ {
-		challenge, err := sm.StartAuthentication(fp)
-		if err != nil {
-			t.Fatalf("StartAuthentication[%d]: %v", i, err)
-		}
-		_, err = sm.CompleteAuthentication(email, challenge.Code, fp, i+1, "ANALYST")
+		otpCode := ceremonyOTP(t, sm, sender, priv, credID, fp, uint32(i+1))
+		_, err = sm.CompleteAuthentication(email, otpCode, fp, i+1, "ANALYST")
 		if err != nil {
 			t.Fatalf("CompleteAuthentication[%d]: %v", i, err)
 		}
@@ -441,24 +417,13 @@ func TestCleanupExpiredSessions(t *testing.T) {
 	email := "cleanup@xio.cybersurhub.com"
 	fp := "hw-uuid-cleanup"
 
-	att := &FIDO2Attestation{
-		CredentialID:      []byte("cred-clean"),
-		PublicKey:         []byte("pub-clean"),
-		AAGUID:            [16]byte{0x02},
-		DeviceFingerprint: fp,
-	}
-	if err := sm.RegisterDevice(email, att); err != nil {
-		t.Fatalf("RegisterDevice: %v", err)
-	}
+	priv, credID, sender := registerCeremonyDevice(t, sm, email, fp)
 
 	// Create 4 sessions.
 	var tokenIDs []string
 	for i := 0; i < 4; i++ {
-		challenge, err := sm.StartAuthentication(fp)
-		if err != nil {
-			t.Fatalf("StartAuthentication[%d]: %v", i, err)
-		}
-		token, err := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+		otpCode := ceremonyOTP(t, sm, sender, priv, credID, fp, uint32(i+1))
+		token, err := sm.CompleteAuthentication(email, otpCode, fp, 1, "ANALYST")
 		if err != nil {
 			t.Fatalf("CompleteAuthentication[%d]: %v", i, err)
 		}
@@ -491,25 +456,35 @@ func TestConcurrentSessions(t *testing.T) {
 
 	// Pre-register devices for each goroutine.
 	type deviceInfo struct {
-		email string
-		fp    string
+		email  string
+		fp     string
+		priv   *ecdsa.PrivateKey
+		credID []byte
 	}
 	devices := make([]deviceInfo, goroutines)
 
 	for i := 0; i < goroutines; i++ {
 		email := "user" + itoa(i) + "@xio.cybersurhub.com"
 		fp := "hw-uuid-concurrent-" + itoa(i)
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey[%d]: %v", i, err)
+		}
+		credID := []byte("cred-" + itoa(i))
 		att := &FIDO2Attestation{
-			CredentialID:      []byte("cred-" + itoa(i)),
-			PublicKey:         []byte("pub-" + itoa(i)),
+			CredentialID:      credID,
+			PublicKey:         marshalCOSEKey(t, &priv.PublicKey),
 			AAGUID:            [16]byte{byte(i + 1)},
 			DeviceFingerprint: fp,
 		}
 		if err := sm.RegisterDevice(email, att); err != nil {
 			t.Fatalf("RegisterDevice[%d]: %v", i, err)
 		}
-		devices[i] = deviceInfo{email: email, fp: fp}
+		devices[i] = deviceInfo{email: email, fp: fp, priv: priv, credID: credID}
 	}
+	sm.ConfigureWebAuthn(ceremonyRPID, ceremonyOrigin)
+	router := &routeSender{}
+	sm.SetOTPSender(router)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines)
@@ -520,13 +495,33 @@ func TestConcurrentSessions(t *testing.T) {
 			defer wg.Done()
 			d := devices[idx]
 
-			challenge, err := sm.StartAuthentication(d.fp)
+			// Real WebAuthn ceremony per goroutine.
+			chal, err := sm.BeginWebAuthnAuth(d.fp)
 			if err != nil {
 				errCh <- err
 				return
 			}
+			assertion, err := buildTestAssertion(d.priv, d.credID, chal, 1)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			otpChal, err := sm.CompleteWebAuthnAuth(d.fp, assertion)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if otpChal.Code != "" {
+				errCh <- fmt.Errorf("OTP code leaked to API caller")
+				return
+			}
+			code := router.lastCode(d.email)
+			if code == "" {
+				errCh <- fmt.Errorf("no OTP delivered for %s", d.email)
+				return
+			}
 
-			token, err := sm.CompleteAuthentication(d.email, challenge.Code, d.fp, idx%10, "ANALYST")
+			token, err := sm.CompleteAuthentication(d.email, code, d.fp, idx%10, "ANALYST")
 			if err != nil {
 				errCh <- err
 				return
@@ -580,16 +575,44 @@ func BenchmarkTokenValidation(b *testing.B) {
 	email := "bench@xio.cybersurhub.com"
 	fp := "hw-uuid-bench-valid"
 
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	sm.ConfigureWebAuthn(ceremonyRPID, ceremonyOrigin)
+	sender := &recordingSender{}
+	sm.SetOTPSender(sender)
+	credID := []byte("cred-bench")
 	att := &FIDO2Attestation{
-		CredentialID:      []byte("cred-bench"),
-		PublicKey:         []byte("pub-bench"),
+		CredentialID:      credID,
+		PublicKey:         coseP256PublicKey(&priv.PublicKey),
 		AAGUID:            [16]byte{0xFF},
 		DeviceFingerprint: fp,
 	}
-	_ = sm.RegisterDevice(email, att)
+	if err := sm.RegisterDevice(email, att); err != nil {
+		b.Fatal(err)
+	}
 
-	challenge, _ := sm.StartAuthentication(fp)
-	token, _ := sm.CompleteAuthentication(email, challenge.Code, fp, 1, "ANALYST")
+	chal, err := sm.BeginWebAuthnAuth(fp)
+	if err != nil {
+		b.Fatal(err)
+	}
+	assertion, err := buildTestAssertion(priv, credID, chal, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	otpChal, err := sm.CompleteWebAuthnAuth(fp, assertion)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if otpChal.Code != "" {
+		b.Fatal("OTP code leaked to API caller")
+	}
+	code := sender.code[len(sender.code)-1]
+	token, err := sm.CompleteAuthentication(email, code, fp, 1, "ANALYST")
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

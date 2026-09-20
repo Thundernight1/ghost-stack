@@ -142,6 +142,20 @@
             color: var(--accent-green);
         }
 
+        .api-banner {
+            background: rgba(255, 60, 90, 0.12);
+            border: 1px solid rgba(255, 60, 90, 0.5);
+            color: #ff8095;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            padding: 10px 18px;
+            text-align: center;
+        }
+        .status-dot.offline {
+            background: #ff3c5a;
+            box-shadow: 0 0 8px #ff3c5a;
+            animation: none;
+        }
         .status-dot {
             width: 8px;
             height: 8px;
@@ -597,12 +611,17 @@
         </div>
         <div class="header-stats">
             <div class="status-pill">
-                <div class="status-dot"></div>
-                <span>ACTIVE GUARD</span>
+                <div class="status-dot" id="statusDot"></div>
+                <span id="guardLabel">CONNECTING&hellip;</span>
             </div>
-            <div class="live-clock" id="liveClock">2026-05-24 15:37:33</div>
+            <div class="live-clock" id="liveClock">--</div>
         </div>
     </header>
+    <div id="apiBanner" class="api-banner" hidden>
+        OFFLINE &mdash; status API unreachable. Start <code>ghost-ctl daemon</code>
+        and serve this dashboard from the status API host (default 127.0.0.1:9090,
+        see GHOST_STATUS_ADDR). No synthetic data is shown.
+    </div>
 
     <!-- Main Container -->
     <div class="dashboard-container">
@@ -615,30 +634,30 @@
                 <div class="card-header">
                     <h2 class="card-title">
                         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                        4-LAYER DECEPTION FIREWALL
+                        ORCHESTRATOR STATUS
                     </h2>
-                    <span style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent-cyan);">eBPF/XDP ENGINE</span>
+                    <span style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent-cyan);">LIVE &bull; /api/status</span>
                 </div>
                 <div class="firewall-grid">
                     <div class="layer-box">
-                        <div class="layer-num">Layer 1</div>
-                        <div class="layer-name layer-l1">nftables</div>
-                        <div class="layer-counter" id="counterL1">4,912</div>
+                        <div class="layer-num">XDP</div>
+                        <div class="layer-name layer-l3">allowlist enforcement</div>
+                        <div class="layer-counter" id="counterXdp">&mdash;</div>
                     </div>
                     <div class="layer-box">
-                        <div class="layer-num">Layer 2</div>
-                        <div class="layer-name layer-l2">TC</div>
-                        <div class="layer-counter" id="counterL2">23,109</div>
+                        <div class="layer-num">Allowlist</div>
+                        <div class="layer-name layer-l1">entries</div>
+                        <div class="layer-counter" id="counterAllow">&mdash;</div>
                     </div>
                     <div class="layer-box">
-                        <div class="layer-num">Layer 3</div>
-                        <div class="layer-name layer-l3">XDP</div>
-                        <div class="layer-counter" id="counterL3">142,881</div>
+                        <div class="layer-num">Blocked</div>
+                        <div class="layer-name layer-l4">threat IPs</div>
+                        <div class="layer-counter" id="counterBlocked">&mdash;</div>
                     </div>
                     <div class="layer-box">
-                        <div class="layer-num">Layer 4</div>
-                        <div class="layer-name layer-l4">AppArmor</div>
-                        <div class="layer-counter" id="counterL4">124</div>
+                        <div class="layer-num">Depts</div>
+                        <div class="layer-name layer-l2">containers</div>
+                        <div class="layer-counter" id="counterDepts">&mdash;</div>
                     </div>
                 </div>
             </div>
@@ -788,85 +807,175 @@
         setInterval(updateClock, 1000);
         updateClock();
 
-        // Animated Counters
-        const counters = {
-            L1: { el: document.getElementById('counterL1'), val: 4912, inc: 1 },
-            L2: { el: document.getElementById('counterL2'), val: 23109, inc: 3 },
-            L3: { el: document.getElementById('counterL3'), val: 142881, inc: 15 },
-            L4: { el: document.getElementById('counterL4'), val: 124, inc: 0 }
-        };
+        // ============================================================
+        // GHOST-STACK dashboard — LIVE data from the orchestrator status API.
+        // Endpoints (default 127.0.0.1:9090, see GHOST_STATUS_ADDR):
+        //   GET /api/status  GET /api/blocks  GET /api/audit?limit=N  GET /api/depts
+        // No synthetic data anywhere below: if the API is unreachable the
+        // dashboard shows OFFLINE and keeps the last known values.
+        // Serve this file from the status API host (or reverse-proxy /api/*)
+        // so same-origin fetch works.
+        // ============================================================
 
-        function animateCounters() {
-            for (const key in counters) {
-                const c = counters[key];
-                if (Math.random() > 0.3) {
-                    c.val += Math.floor(Math.random() * c.inc * 2) + c.inc;
-                    c.el.textContent = c.val.toLocaleString();
-                }
-            }
+        const POLL_MS = 3000;        // status/blocks/audit/depts refresh
+        const CHART_POLL_MS = 15000; // audit-rate chart refresh (heavier query)
+
+        async function apiGet(path) {
+            const res = await fetch(path, { cache: 'no-store' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
         }
-        setInterval(animateCounters, 1500);
 
-        // MITRE ATT&CK Map cycle
+        function setOnline(online) {
+            const dot = document.getElementById('statusDot');
+            const label = document.getElementById('guardLabel');
+            const banner = document.getElementById('apiBanner');
+            dot.classList.toggle('offline', !online);
+            label.textContent = online ? 'ACTIVE GUARD' : 'OFFLINE';
+            banner.hidden = online;
+        }
+
+        function setText(id, val) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val;
+        }
+
+        // ---- /api/status: headline counters ----
+        function renderStatus(st) {
+            setText('counterXdp', st.xdp_attached ? 'ATTACHED' : 'DETACHED');
+            setText('counterAllow', Number(st.allowlist_entries || 0).toLocaleString());
+            setText('counterBlocked', Number(st.blocked_ips || 0).toLocaleString());
+            setText('counterDepts', Number(st.departments || 0).toLocaleString());
+        }
+
+        // ---- /api/blocks: threat actor profiles + MITRE TTP highlight ----
         const mitreIds = ['t1046', 't1110', 't1190', 't1068', 't1210', 't1071'];
-        function cycleMitreMap() {
-            // Remove previous active
-            mitreIds.forEach(id => document.getElementById(id).classList.remove('mitre-active'));
-            
-            // Randomly activate 1-2 techniques
-            const activeCount = Math.floor(Math.random() * 2) + 1;
-            for (let i = 0; i < activeCount; i++) {
-                const randId = mitreIds[Math.floor(Math.random() * mitreIds.length)];
-                document.getElementById(randId).classList.add('mitre-active');
+        function renderBlocks(blocked) {
+            const list = document.getElementById('actorList');
+            list.innerHTML = '';
+            if (!blocked.length) {
+                list.innerHTML = '<div style="color:var(--text-dim);font-size:0.8rem;">No blocked IPs &mdash; allowlist intact.</div>';
             }
+            const seenTtp = new Set();
+            blocked.forEach(b => {
+                (b.ttps || []).forEach(t => seenTtp.add(String(t).toLowerCase()));
+                const row = document.createElement('div');
+                row.className = 'actor-row';
+                const score = Math.max(0, Math.min(100, b.threat_score || 0));
+                row.innerHTML =
+                    '<div class="actor-header">' +
+                    '<span class="actor-ip">&#9889; Adversary IP: ' + escapeHtml(b.ip || '?') + '</span>' +
+                    '<span class="actor-score">THREAT SCORE: ' + score + '</span>' +
+                    '</div>' +
+                    '<div class="actor-bar-bg"><div class="actor-bar-fill" style="width:' + score + '%"></div></div>' +
+                    '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:4px;">' +
+                    escapeHtml(b.reason || '') +
+                    ((b.tools && b.tools.length) ? ' &bull; tools: ' + escapeHtml(b.tools.join(', ')) : '') +
+                    '</div>';
+                list.appendChild(row);
+            });
+            // Highlight MITRE techniques actually observed in blocked TTPs.
+            mitreIds.forEach(id => {
+                const card = document.getElementById(id);
+                if (card) card.classList.toggle('mitre-active', seenTtp.has(id));
+            });
         }
-        setInterval(cycleMitreMap, 3000);
-        cycleMitreMap();
 
-        // Canvas Chart
+        // ---- /api/audit: live feed (newest first) ----
+        const feed = document.getElementById('attackFeed');
+        let newestAuditTs = 0;
+        function auditLevel(result) {
+            const r = String(result || '').toUpperCase();
+            if (r.includes('BLOCK') || r.includes('QUARANTINE') || r.includes('DENIED')) return 'crit';
+            if (r.includes('WARN') || r.includes('ALERT')) return 'warn';
+            return 'info';
+        }
+        function auditBadge(result) {
+            const r = String(result || '').toUpperCase();
+            if (r.includes('BLOCK')) return 'BLOCKED';
+            if (r.includes('QUARANTINE')) return 'QUARANTINE';
+            if (r.includes('DENIED')) return 'DENIED';
+            return 'AUDIT';
+        }
+        function renderFeed(entries) {
+            // API returns oldest-first; render newest-first, newest on top.
+            const fresh = entries.filter(e => Date.parse(e.timestamp) > newestAuditTs);
+            if (!fresh.length && feed.children.length) return;
+            fresh.reverse().forEach(e => {
+                const lvl = auditLevel(e.result);
+                const item = document.createElement('div');
+                item.className = 'feed-item feed-item-' + lvl;
+                const ts = new Date(e.timestamp);
+                item.innerHTML =
+                    '<span class="feed-time">' + ts.toTimeString().split(' ')[0] + '</span>' +
+                    '<span class="feed-msg">[' + escapeHtml(e.actor || 'orchestrator') + '] ' +
+                    escapeHtml(e.action || '') +
+                    (e.details && e.details.ip ? ' &mdash; ' + escapeHtml(String(e.details.ip)) : '') +
+                    '</span>' +
+                    '<span class="feed-badge badge-' + lvl + '">' + auditBadge(e.result) + '</span>';
+                feed.insertBefore(item, feed.firstChild);
+            });
+            while (feed.children.length > 30) feed.removeChild(feed.lastChild);
+            const latest = entries[entries.length - 1];
+            if (latest) newestAuditTs = Math.max(newestAuditTs, Date.parse(latest.timestamp) || 0);
+        }
+
+        // ---- /api/depts: hierarchy tree reflects real container state ----
+        const deptNodes = { 0: 'nodeRoot', 1: 'nodeDir', 10: 'nodeMgr', 100: 'nodeStaff' };
+        const deptConns = { 0: 'con1', 1: 'con2', 10: 'con3' };
+        function renderDepts(departments) {
+            const byId = {};
+            departments.forEach(d => { byId[d.id] = d; });
+            Object.keys(deptNodes).forEach(k => {
+                const node = document.getElementById(deptNodes[k]);
+                if (!node) return;
+                const meta = node.querySelector('.node-meta');
+                const d = byId[k];
+                node.classList.remove('node-active', 'node-quarantined');
+                if (!d) {
+                    if (meta) meta.textContent = 'inactive';
+                    return;
+                }
+                if (d.quarantined || d.frozen) {
+                    node.classList.add('node-quarantined');
+                    if (meta) meta.textContent = (d.quarantined ? 'QUARANTINED' : 'FROZEN') + ' \u2022 PID ' + d.pid;
+                } else {
+                    node.classList.add('node-active');
+                    if (meta) meta.textContent = escapeHtml(d.name || '').toUpperCase() + ' \u2022 PID ' + d.pid;
+                }
+                const conn = document.getElementById(deptConns[k]);
+                if (conn) {
+                    conn.className = 'tree-connector ' +
+                        ((d.quarantined || d.frozen) ? 'tree-connector-quarantine' : 'tree-connector-active');
+                }
+            });
+        }
+
+        // ---- audit-rate chart: events/minute over the last 30 min ----
         const canvas = document.getElementById('chartCanvas');
         const ctx = canvas.getContext('2d');
-        let chartData = Array(30).fill(0).map(() => Math.floor(Math.random() * 200) + 100);
-
-        // Resize Canvas to parent
+        let chartData = new Array(30).fill(0);
         function resizeCanvas() {
             canvas.width = canvas.parentElement.clientWidth;
             canvas.height = canvas.parentElement.clientHeight;
+            drawChart();
         }
-        resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
 
         function drawChart() {
-            if (!ctx) return;
+            if (!ctx || !canvas.width) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Shift data and add new
-            chartData.shift();
-            const lastVal = chartData[chartData.length - 1];
-            const change = Math.floor(Math.random() * 60) - 30;
-            const newVal = Math.max(50, Math.min(600, lastVal + change));
-            chartData.push(newVal);
-
-            // Draw line
             ctx.beginPath();
             ctx.lineWidth = 2;
             ctx.strokeStyle = '#00f0ff';
-            
             const step = canvas.width / (chartData.length - 1);
-            const maxVal = Math.max(...chartData, 100);
-            
+            const maxVal = Math.max(...chartData, 1);
             chartData.forEach((val, i) => {
                 const x = i * step;
                 const y = canvas.height - (val / maxVal * (canvas.height - 20)) - 10;
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             });
             ctx.stroke();
-
-            // Gradient fill underneath
             ctx.lineTo(canvas.width, canvas.height);
             ctx.lineTo(0, canvas.height);
             ctx.closePath();
@@ -876,149 +985,53 @@
             ctx.fillStyle = grad;
             ctx.fill();
         }
-        setInterval(drawChart, 200);
 
-        // Live Feed and Attack Simulation
-        const ips = ['192.168.1.144', '10.0.4.52', '172.30.0.50', '8.8.8.8'];
-        const tools = ['nmap', 'hydra', 'masscan', 'curl/prober', 'sqlmap', 'custom payload'];
-        const feed = document.getElementById('attackFeed');
+        async function refreshChart() {
+            try {
+                const data = await apiGet('/api/audit?limit=500');
+                const buckets = new Array(30).fill(0);
+                const now = Date.now();
+                (data.entries || []).forEach(e => {
+                    const t = Date.parse(e.timestamp);
+                    if (!t) return;
+                    const minsAgo = Math.floor((now - t) / 60000);
+                    if (minsAgo >= 0 && minsAgo < 30) buckets[29 - minsAgo]++;
+                });
+                chartData = buckets;
+                drawChart();
+            } catch (e) { /* keep last chart on failure */ }
+        }
 
-        const eventsList = [
-            { msg: "Portscan detected from $IP - probing ports 1-1000", lvl: "warn", badge: "WARNING", type: "L3 XDP Drop" },
-            { msg: "Brute-force SSH attack blocked from $IP on $TOOL", lvl: "info", badge: "AUDIT", type: "L1 iptables" },
-            { msg: "SQL Injection payload detected from $IP inside request parameters", lvl: "warn", badge: "WARNING", type: "L3 XDP Drop" },
-            { msg: "Path traversal attempt blocked on Headquarters: PID $PID", lvl: "crit", badge: "CRITICAL", type: "L4 AppArmor" },
-            { msg: "Deceptive Honeypot target hit from $IP using $TOOL", lvl: "info", badge: "DECEPTION", type: "L2 TC Routing" },
-            { msg: "Credential spray block: 45 authentication events dropped", lvl: "warn", badge: "WARNING", type: "L1 nftables" },
-            { msg: "Alert Escalation: cgroup freeze triggered on Headquarters (dept-0)", lvl: "crit", badge: "QUARANTINE", type: "ORCHESTRATOR" }
-        ];
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
 
-        function addFeedItem() {
-            const randIP = ips[Math.floor(Math.random() * ips.length)];
-            const randTool = tools[Math.floor(Math.random() * tools.length)];
-            const randEv = {...eventsList[Math.floor(Math.random() * eventsList.length)]};
-            
-            randEv.msg = randEv.msg.replace('$IP', randIP).replace('$TOOL', randTool).replace('$PID', '6408');
-
-            const item = document.createElement('div');
-            item.className = `feed-item feed-item-${randEv.lvl}`;
-            
-            const timeSpan = document.createElement('span');
-            timeSpan.className = 'feed-time';
-            const now = new Date();
-            timeSpan.textContent = now.toTimeString().split(' ')[0];
-
-            const msgSpan = document.createElement('span');
-            msgSpan.className = 'feed-msg';
-            msgSpan.textContent = `[${randEv.type}] ${randEv.msg}`;
-
-            const badgeSpan = document.createElement('span');
-            badgeSpan.className = `feed-badge badge-${randEv.lvl}`;
-            badgeSpan.textContent = randEv.badge;
-
-            item.appendChild(timeSpan);
-            item.appendChild(msgSpan);
-            item.appendChild(badgeSpan);
-
-            feed.insertBefore(item, feed.firstChild);
-
-            // Keep list under 30 items
-            if (feed.children.length > 30) {
-                feed.removeChild(feed.lastChild);
-            }
-
-            // Perform interactive quarantine action on critical event!
-            if (randEv.lvl === 'crit' && Math.random() > 0.4) {
-                triggerVisualQuarantine();
+        // ---- poll loop ----
+        async function refreshAll() {
+            try {
+                const [status, blocks, audit, depts] = await Promise.all([
+                    apiGet('/api/status'),
+                    apiGet('/api/blocks'),
+                    apiGet('/api/audit?limit=30'),
+                    apiGet('/api/depts'),
+                ]);
+                setOnline(true);
+                renderStatus(status);
+                renderBlocks(blocks.blocked || []);
+                renderFeed(audit.entries || []);
+                renderDepts(depts.departments || []);
+            } catch (e) {
+                setOnline(false);
             }
         }
-        setInterval(addFeedItem, 2000);
-        addFeedItem();
 
-        // Threat Actors
-        const actors = [
-            { ip: '172.30.0.50', score: 94 },
-            { ip: '192.168.1.144', score: 85 },
-            { ip: '10.0.4.52', score: 45 }
-        ];
-
-        const actorListEl = document.getElementById('actorList');
-        function renderActors() {
-            actorListEl.innerHTML = '';
-            actors.forEach(act => {
-                // Fluctuating threat scores
-                const change = Math.floor(Math.random() * 6) - 3;
-                act.score = Math.max(10, Math.min(100, act.score + change));
-
-                const row = document.createElement('div');
-                row.className = 'actor-row';
-
-                const header = document.createElement('div');
-                header.className = 'actor-header';
-                
-                const ipSpan = document.createElement('span');
-                ipSpan.className = 'actor-ip';
-                ipSpan.textContent = `⚡ Adversary IP: ${act.ip}`;
-
-                const scoreSpan = document.createElement('span');
-                scoreSpan.className = 'actor-score';
-                scoreSpan.textContent = `THREAT SCORE: ${act.score}`;
-
-                header.appendChild(ipSpan);
-                header.appendChild(scoreSpan);
-
-                const barBg = document.createElement('div');
-                barBg.className = 'actor-bar-bg';
-
-                const barFill = document.createElement('div');
-                barFill.className = 'actor-bar-fill';
-                barFill.style.width = `${act.score}%`;
-
-                barBg.appendChild(barFill);
-
-                row.appendChild(header);
-                row.appendChild(barBg);
-                actorListEl.appendChild(row);
-            });
-        }
-        setInterval(renderActors, 3000);
-        renderActors();
-
-        // Visual Quarantine simulation
-        const nodes = {
-            root: document.getElementById('nodeRoot'),
-            dir: document.getElementById('nodeDir'),
-            mgr: document.getElementById('nodeMgr'),
-            staff: document.getElementById('nodeStaff')
-        };
-        const connectors = {
-            con1: document.getElementById('con1'),
-            con2: document.getElementById('con2'),
-            con3: document.getElementById('con3')
-        };
-
-        function triggerVisualQuarantine() {
-            // Quarantine root node visually
-            nodes.root.classList.add('node-quarantined');
-            nodes.root.querySelector('.node-meta').textContent = 'FROZEN • QUARANTINED';
-            
-            // Connectors glow red
-            connectors.con1.className = 'tree-connector tree-connector-quarantine';
-
-            // Log event to feed
-            const item = document.createElement('div');
-            item.className = 'feed-item feed-item-crit';
-            const now = new Date();
-            item.innerHTML = `<span class="feed-time">${now.toTimeString().split(' ')[0]}</span><span class="feed-msg">[ORCHESTRATOR] Container Headquarters (dept-0) quarantined: all sockets dropped.</span><span class="feed-badge badge-crit">SECURED</span>`;
-            feed.insertBefore(item, feed.firstChild);
-
-            // After 6 seconds, restore back to active status
-            setTimeout(() => {
-                nodes.root.classList.remove('node-quarantined');
-                nodes.root.querySelector('.node-meta').textContent = 'ROOT • PID 6408';
-                connectors.con1.className = 'tree-connector tree-connector-active';
-            }, 6000);
-        }
+        resizeCanvas();
+        refreshAll();
+        refreshChart();
+        setInterval(refreshAll, POLL_MS);
+        setInterval(refreshChart, CHART_POLL_MS);
     </script>
 </body>
 </html>

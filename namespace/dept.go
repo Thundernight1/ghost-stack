@@ -156,6 +156,17 @@ type DepartmentManager struct {
 	hierarchy  *hierarchy.HierarchyTree
 }
 
+// ListContainers returns a snapshot of all tracked department containers.
+func (dm *DepartmentManager) ListContainers() []RunningContainer {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+	out := make([]RunningContainer, 0, len(dm.containers))
+	for _, c := range dm.containers {
+		out = append(out, *c)
+	}
+	return out
+}
+
 // NewDepartmentManager creates a new manager for department containers.
 func NewDepartmentManager(basePath string, ht *hierarchy.HierarchyTree) *DepartmentManager {
 	return &DepartmentManager{
@@ -182,13 +193,23 @@ func (dm *DepartmentManager) RegisterRecoveredContainer(cfg ContainerConfig, pid
 // for the given department configuration.
 //
 // Steps:
+// SpawnDepartment creates and starts a department container:
 //  1. Create cgroup v2 subtree with resource limits
 //  2. Prepare rootfs with private mounts
-//  3. Set up UID/GID mapping for the department's tier
-//  4. Create veth pair for network namespace
-//  5. Fork the container process with all CLONE_NEW* flags
-//  6. Bind-mount AGENT-ALPHA binary (read-only) + alert socket
-//  7. pivot_root into the department rootfs
+//  3. Compute UID/GID mapping for the department's tier
+//  4. Bind-mount AGENT-ALPHA (read-only) + alert socket into the rootfs
+//     (before clone — the child inherits them in its mount namespace)
+//  5. Re-exec self as container-init with all CLONE_NEW* flags; the child
+//     does pivot_root into the rootfs, mounts /proc+/sys+/dev (real device
+//     nodes), detaches the old root, and execs the department init
+//  6. Liveness check: fail the spawn if the init dies during pivot/exec
+//  7. Set hostname in the UTS namespace (fatal on error)
+//  8. Create the veth pair for the network namespace (fatal on error)
+//  9. Move the container PID into its cgroup (fatal on error)
+//
+// Post-fork failures are fatal and trigger full cleanup (SIGKILL the
+// child, detach the bind mounts, remove the cgroup): a half-isolated
+// container must never be recorded as running.
 func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningContainer, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -211,15 +232,50 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 	// Step 3: Compute UID/GID mapping.
 	uidMapping := hierarchy.DepartmentUIDMapping(cfg.Tier, cfg.DeptID)
 
-	// Step 4: Build the container init command.
-	// The container runs /sbin/init (or busybox init) inside the namespace.
-	initPath := filepath.Join(cfg.RootFS, "sbin", "init")
-	if _, err := os.Stat(initPath); os.IsNotExist(err) {
-		// Fallback: use /bin/sh as init.
+	// Step 4: Parent-side bind mounts into the rootfs BEFORE clone.
+	// The child inherits these in its fresh mount namespace and
+	// pivot_root carries them into the container. Doing this before
+	// cmd.Start() (not after, as before) removes the race where the
+	// child pivots before the mounts exist.
+	if cfg.AgentBinaryPath != "" {
+		agentMountTarget := filepath.Join(cfg.RootFS, "opt", "ghost-agent", "alpha")
+		if err := os.MkdirAll(filepath.Dir(agentMountTarget), 0o755); err != nil {
+			destroyFailedSpawn(cgroupPath, cfg, nil)
+			return nil, fmt.Errorf("ghost-stack: agent mount dir: %w", err)
+		}
+		if err := bindMountReadOnly(cfg.AgentBinaryPath, agentMountTarget); err != nil {
+			destroyFailedSpawn(cgroupPath, cfg, nil)
+			return nil, fmt.Errorf("ghost-stack: agent bind mount: %w", err)
+		}
+	}
+	if cfg.AlertSocketPath != "" {
+		socketMountTarget := filepath.Join(cfg.RootFS, "var", "run", "ghost-alert.sock")
+		if err := os.MkdirAll(filepath.Dir(socketMountTarget), 0o755); err != nil {
+			destroyFailedSpawn(cgroupPath, cfg, nil)
+			return nil, fmt.Errorf("ghost-stack: socket mount dir: %w", err)
+		}
+		if err := bindMountReadOnly(cfg.AlertSocketPath, socketMountTarget); err != nil {
+			destroyFailedSpawn(cgroupPath, cfg, nil)
+			return nil, fmt.Errorf("ghost-stack: socket bind mount: %w", err)
+		}
+	}
+
+	// Step 5: Choose the in-container init, then re-exec ourselves as the
+	// container init. The child runs namespace.ContainerInit (pivot_root,
+	// /proc+/sys+/dev, then exec of initPath) inside the new namespaces.
+	// initPath is the in-container path: existence is probed on the host
+	// via the rootfs-prefixed path.
+	initPath := "/sbin/init"
+	if _, err := os.Stat(filepath.Join(cfg.RootFS, "sbin", "init")); os.IsNotExist(err) {
 		initPath = "/bin/sh"
 	}
 
-	cmd := exec.Command(initPath)
+	self, err := os.Executable()
+	if err != nil {
+		destroyFailedSpawn(cgroupPath, cfg, nil)
+		return nil, fmt.Errorf("ghost-stack: os.Executable: %w", err)
+	}
+	cmd := exec.Command(self, "container-init")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: uintptr(CloneFlags),
 		UidMappings: []syscall.SysProcIDMap{
@@ -245,6 +301,9 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 		fmt.Sprintf("GHOST_DEPT_ID=%d", cfg.DeptID),
 		fmt.Sprintf("GHOST_DEPT_NAME=%s", cfg.DeptName),
 		fmt.Sprintf("GHOST_TIER=%s", cfg.Tier.String()),
+		"GHOST_CONTAINER_INIT=1",
+		"GHOST_CONTAINER_ROOTFS=" + cfg.RootFS,
+		"GHOST_CONTAINER_INIT_PATH=" + initPath,
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm-256color",
 	}
@@ -252,44 +311,49 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// Step 5: Start the container process.
+	// Step 6: Start the container process.
 	if err := cmd.Start(); err != nil {
+		destroyFailedSpawn(cgroupPath, cfg, nil)
 		return nil, fmt.Errorf("ghost-stack: failed to start container: %w", err)
 	}
 
 	pid := cmd.Process.Pid
 
-	// Step 6: Post-fork setup — performed from the host side using nsenter.
-	// Set hostname inside UTS namespace.
+	// Liveness: the re-exec'd child must survive pivot_root and the exec
+	// of the department init. If it dies here the container is unusable —
+	// fail the spawn instead of recording a dead PID.
+	if err := awaitContainerInit(pid); err != nil {
+		destroyFailedSpawn(cgroupPath, cfg, cmd)
+		return nil, err
+	}
+
+	// Step 7: Set hostname inside the UTS namespace.
+	// Fatal: a container without its deterministic hostname breaks the
+	// audit trail's host attribution.
 	if err := nsenterExec(pid, "uts", "hostname", cfg.Hostname); err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-stack: warning: failed to set hostname: %v\n", err)
+		destroyFailedSpawn(cgroupPath, cfg, cmd)
+		return nil, fmt.Errorf("ghost-stack: hostname setup failed: %w", err)
 	}
 
-	// Step 7: Configure network namespace — create veth pair.
+	// Step 8: Configure network namespace — create veth pair.
+	// Fatal: without the veth pair there is no network isolation.
 	if err := setupVethPair(pid, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-stack: warning: veth setup failed: %v\n", err)
+		destroyFailedSpawn(cgroupPath, cfg, cmd)
+		return nil, fmt.Errorf("ghost-stack: veth setup failed: %w", err)
 	}
 
-	// Step 8: Bind-mount AGENT-ALPHA binary (read-only) into container.
-	if cfg.AgentBinaryPath != "" {
-		agentMountTarget := filepath.Join(cfg.RootFS, "opt", "ghost-agent", "alpha")
-		if err := os.MkdirAll(filepath.Dir(agentMountTarget), 0o755); err == nil {
-			_ = bindMountReadOnly(cfg.AgentBinaryPath, agentMountTarget)
-		}
-	}
-
-	// Step 9: Bind-mount alert socket.
-	if cfg.AlertSocketPath != "" {
-		socketMountTarget := filepath.Join(cfg.RootFS, "var", "run", "ghost-alert.sock")
-		if err := os.MkdirAll(filepath.Dir(socketMountTarget), 0o755); err == nil {
-			_ = bindMountReadOnly(cfg.AlertSocketPath, socketMountTarget)
-		}
-	}
-
-	// Step 10: Move container PID into its cgroup.
+	// Step 9: Move container PID into its cgroup.
+	// Fatal: without cgroup assignment there are no resource limits and
+	// quarantine (cgroup.freeze) cannot work.
 	if err := moveToCgroup(cgroupPath, pid); err != nil {
-		fmt.Fprintf(os.Stderr, "ghost-stack: warning: cgroup assignment failed: %v\n", err)
+		destroyFailedSpawn(cgroupPath, cfg, cmd)
+		return nil, fmt.Errorf("ghost-stack: cgroup assignment failed: %w", err)
 	}
+
+	// Reap the init when it eventually exits so the long-lived daemon
+	// does not accumulate zombies. (Full stop/teardown lifecycle is still
+	// TODO — see CHANGELOG.)
+	go func() { _ = cmd.Wait() }()
 
 	// Record in hierarchy.
 	_ = dm.hierarchy.SetContainerPID(cfg.DeptID, pid)
@@ -304,6 +368,43 @@ func (dm *DepartmentManager) SpawnDepartment(cfg ContainerConfig) (*RunningConta
 
 	dm.containers[cfg.DeptID] = container
 	return container, nil
+}
+
+// destroyFailedSpawn tears down a partially-created container after a
+// fatal post-fork error: SIGKILL the child (reaping it if cmd is known),
+// detach the parent-side bind mounts, and remove the cgroup subtree.
+func destroyFailedSpawn(cgroupPath string, cfg ContainerConfig, cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	for _, m := range []string{
+		filepath.Join(cfg.RootFS, "opt", "ghost-agent", "alpha"),
+		filepath.Join(cfg.RootFS, "var", "run", "ghost-alert.sock"),
+	} {
+		_ = syscall.Unmount(m, syscall.MNT_DETACH)
+	}
+	_ = os.RemoveAll(cgroupPath)
+}
+
+// awaitContainerInit waits briefly for the re-exec'd container init to
+// prove it survived pivot_root and the exec of the department init. If
+// the child exits (e.g. pivot_root failed, init missing) the spawn fails
+// instead of recording a dead PID.
+func awaitContainerInit(pid int) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var ws syscall.WaitStatus
+		wpid, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
+		if err != nil {
+			return fmt.Errorf("ghost-stack: container liveness check: %w", err)
+		}
+		if wpid == pid {
+			return fmt.Errorf("ghost-stack: container init exited during pivot_root/exec (status %d)", ws.ExitStatus())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil
 }
 
 // QuarantineDepartment instantly freezes a department container and

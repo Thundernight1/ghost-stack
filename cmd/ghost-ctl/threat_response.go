@@ -4,20 +4,22 @@
 // Gap 5: Bridge AGENT-BETA and Layer 3 XDP.
 //
 // Architecture:
-//   AGENT-BETA → Unix Socket → ThreatResponseHandler → Layer 3 XDP BPF Map
+//
+//	AGENT-BETA → Unix Socket → ThreatResponseHandler → Layer 3 XDP BPF Map
 //
 // Flow:
-//   1. AGENT-BETA calculates threat_score > 80 for an IP
-//   2. AGENT-BETA sends THREAT_ACTOR_PROFILED alert via Unix socket
-//   3. ThreatResponseHandler (this file) receives the alert
-//   4. Orchestrator creates an Ed25519-signed allowlist update
-//   5. AllowlistManager.removeEntry() deletes the IP from the XDP LPM trie
-//   6. Result: IP is silently dropped at NIC level — ABSOLUTE SILENCE
+//  1. AGENT-BETA calculates threat_score > 80 for an IP
+//  2. AGENT-BETA sends THREAT_ACTOR_PROFILED alert via Unix socket
+//  3. ThreatResponseHandler (this file) receives the alert
+//  4. Orchestrator creates an Ed25519-signed allowlist update
+//  5. AllowlistManager.removeEntry() deletes the IP from the XDP LPM trie
+//  6. Result: IP is silently dropped at NIC level — ABSOLUTE SILENCE
 //
 // This completes the "Observe → Profile → Silent Block" cycle.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -25,7 +27,7 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -68,15 +70,15 @@ type BlockRecord struct {
 
 // ThreatResponseHandler implements the Observe → Profile → Silent Block loop.
 type ThreatResponseHandler struct {
-	config       ThreatResponseConfig
-	l3Manager    *layer3.AllowlistManager
-	listener     net.Listener
-	blockedIPs   map[string]*BlockRecord
-	mu           sync.Mutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	auditFn      func(AuditEntry)
+	config     ThreatResponseConfig
+	l3Manager  *layer3.AllowlistManager
+	listener   net.Listener
+	blockedIPs map[string]*BlockRecord
+	mu         sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	auditFn    func(AuditEntry)
 }
 
 // NewThreatResponseHandler creates a new handler bridging AGENT-BETA to Layer 3 XDP.
@@ -153,69 +155,112 @@ func (trh *ThreatResponseHandler) acceptLoop() {
 	}
 }
 
+// betaFrameMagic prefixes every AGENT-BETA alert frame on the socket.
+// Wire format: "BETA:<len>:<json>" where <len> is the decimal byte length
+// of the JSON payload. The length field is authoritative: the reader waits
+// until exactly <len> bytes have arrived, so fragmented TCP/Unix-socket
+// reads and coalesced messages are both handled correctly.
+const betaFrameMagic = "BETA:"
+
+const (
+	// maxFrameSize caps a single alert frame (1 MiB — alerts are small JSON).
+	maxFrameSize = 1 << 20
+	// maxFrameBuffer caps the per-connection reassembly buffer (4 MiB).
+	maxFrameBuffer = 4 << 20
+)
+
 // handleConnection processes alerts from a single AGENT-BETA connection.
+// It reassembles length-prefixed frames across arbitrary Read boundaries.
 func (trh *ThreatResponseHandler) handleConnection(conn net.Conn) {
 	defer trh.wg.Done()
 	defer conn.Close()
 
-	buf := make([]byte, 65536)
+	var buf []byte
+	tmp := make([]byte, 65536)
 
 	for {
+		// Drain all complete frames currently buffered.
+		for {
+			frame, rest, ok := extractFrame(buf)
+			buf = rest // keep resync progress even when no frame is complete
+			if !ok {
+				break
+			}
+			trh.dispatchFrame(frame)
+		}
+
 		select {
 		case <-trh.ctx.Done():
 			return
 		default:
 		}
 
-		n, err := conn.Read(buf)
+		n, err := conn.Read(tmp)
 		if err != nil {
 			if err != io.EOF {
 				fmt.Fprintf(os.Stderr, "threat-response: read: %v\n", err)
 			}
 			return
 		}
+		if n == 0 {
+			continue
+		}
 
-		// Parse the BETA protocol: "BETA:<length>:<json>"
-		data := string(buf[:n])
-		trh.parseAndDispatch(data)
+		buf = append(buf, tmp[:n]...)
+		if len(buf) > maxFrameBuffer {
+			fmt.Fprintf(os.Stderr, "threat-response: frame buffer overflow — dropping connection\n")
+			return
+		}
 	}
 }
 
-// parseAndDispatch parses AGENT-BETA alert messages and dispatches actions.
-func (trh *ThreatResponseHandler) parseAndDispatch(raw string) {
-	// Format: "BETA:<len>:{json}" — may contain multiple messages.
-	for len(raw) > 0 {
-		idx := strings.Index(raw, "BETA:")
-		if idx == -1 {
-			break
-		}
-		raw = raw[idx+5:]
+// extractFrame pulls one complete "BETA:<len>:<json>" frame from buf.
+// Returns the frame payload, the remaining bytes, and whether a complete
+// frame was available.
+func extractFrame(buf []byte) (frame []byte, rest []byte, ok bool) {
+	magic := []byte(betaFrameMagic)
 
-		// Find the colon separating length from JSON.
-		colonIdx := strings.Index(raw, ":")
-		if colonIdx == -1 {
-			break
-		}
-		raw = raw[colonIdx+1:]
-
-		// Find the end of the JSON object.
-		var alert BetaAlert
-		decoder := json.NewDecoder(strings.NewReader(raw))
-		if err := decoder.Decode(&alert); err != nil {
-			break
-		}
-
-		// Dispatch based on event type.
-		trh.processAlert(&alert)
-
-		// Advance past the consumed JSON.
-		consumed := int(decoder.InputOffset())
-		if consumed < len(raw) {
-			raw = raw[consumed:]
-		} else {
-			break
-		}
+	if len(buf) < len(magic) {
+		return nil, buf, false
 	}
+	if !bytes.HasPrefix(buf, magic) {
+		// Resynchronize on the next magic; keep a tail in case the
+		// magic itself was split across two reads.
+		if i := bytes.Index(buf, magic); i >= 0 {
+			return nil, buf[i:], false
+		}
+		if len(buf) >= len(magic) {
+			return nil, buf[len(buf)-len(magic)+1:], false
+		}
+		return nil, buf, false
+	}
+
+	hdr := buf[len(magic):]
+	colon := bytes.IndexByte(hdr, ':')
+	if colon < 0 {
+		return nil, buf, false // header incomplete — wait for more data
+	}
+	length, err := strconv.Atoi(string(hdr[:colon]))
+	if err != nil || length < 0 || length > maxFrameSize {
+		// Corrupt header — skip it and resynchronize.
+		return nil, buf[len(magic)+colon+1:], false
+	}
+
+	total := len(magic) + colon + 1 + length
+	if len(buf) < total {
+		return nil, buf, false // payload incomplete — wait for more data
+	}
+	return buf[len(magic)+colon+1 : total], buf[total:], true
+}
+
+// dispatchFrame decodes one complete alert frame and processes it.
+func (trh *ThreatResponseHandler) dispatchFrame(frame []byte) {
+	var alert BetaAlert
+	if err := json.Unmarshal(frame, &alert); err != nil {
+		fmt.Fprintf(os.Stderr, "threat-response: bad alert frame: %v\n", err)
+		return
+	}
+	trh.processAlert(&alert)
 }
 
 // processAlert evaluates an AGENT-BETA alert and triggers auto-block if warranted.
@@ -282,7 +327,8 @@ func (trh *ThreatResponseHandler) handleThreatActorProfiled(alert *BetaAlert) {
 		if ttpSlice, ok := ttpRaw.([]interface{}); ok {
 			for _, t := range ttpSlice {
 				if s, ok := t.(string); ok {
-					ttps = append(ttps, s); _ = ttps
+					ttps = append(ttps, s)
+					_ = ttps
 				}
 			}
 		}
@@ -291,7 +337,8 @@ func (trh *ThreatResponseHandler) handleThreatActorProfiled(alert *BetaAlert) {
 		if toolSlice, ok := toolsRaw.([]interface{}); ok {
 			for _, t := range toolSlice {
 				if s, ok := t.(string); ok {
-					tools = append(tools, s); _ = tools
+					tools = append(tools, s)
+					_ = tools
 				}
 			}
 		}
@@ -301,31 +348,40 @@ func (trh *ThreatResponseHandler) handleThreatActorProfiled(alert *BetaAlert) {
 	trh.blockIP(alert.SourceIP, alert.ThreatScore, "THREAT_SCORE_EXCEEDED", alert.Details)
 }
 
-// blockIP removes an IP from the Layer 3 XDP allowlist via a signed update.
-// After this, the IP is silently dropped at NIC driver level — ABSOLUTE SILENCE.
+// blockIP denies an IP at the Layer 3 XDP allowlist via a signed update.
+// It removes the exact /32 entry, or — if the IP is only covered by a
+// broader CIDR — punches a precise hole so the rest of the subnet stays
+// allowed. If the IP was never allowlisted the block is a no-op and the
+// audit record says so honestly instead of claiming success.
 func (trh *ThreatResponseHandler) blockIP(ip string, score int, reason string, details map[string]interface{}) {
 	fmt.Printf("[THREAT-RESPONSE] ⚡ AUTO-BLOCK: %s (score=%d, reason=%s)\n", ip, score, reason)
 
-	// Construct the CIDR for a single IP.
-	cidr := ip + "/32"
-
-	// Create an Ed25519-signed allowlist removal.
-	update, err := layer3.SignUpdate(trh.config.PrivateKey, "remove", []layer3.AllowlistEntry{
-		{CIDR: cidr, Label: fmt.Sprintf("auto-block:%s", reason)},
-	})
+	// Compute the allowlist mutation that denies this IP (exact /32
+	// removal, or a precise hole punched in a covering CIDR).
+	remove, add, changed, err := trh.l3Manager.PlanIPRemoval(ip)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "threat-response: sign update: %v\n", err)
+		fmt.Fprintf(os.Stderr, "threat-response: plan removal of %s: %v\n", ip, err)
 		return
 	}
 
-	// Apply the signed update to the Layer 3 XDP allowlist.
-	if err := trh.l3Manager.ApplyUpdate(update); err != nil {
-		// If removal fails (IP might not be in allowlist), this is fine —
-		// the IP was already not allowed, so it's already being dropped.
-		fmt.Fprintf(os.Stderr, "threat-response: apply update: %v (non-fatal)\n", err)
+	denied := false
+	if changed {
+		// One Ed25519-signed "carve" update applies the removal and the
+		// hole-punch adds atomically: either both land or the allowlist
+		// rolls back to its pre-block state — no half-blocked window.
+		update, err := layer3.SignCarveUpdate(trh.config.PrivateKey, remove, add)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "threat-response: sign carve update: %v\n", err)
+			return
+		}
+		if err := trh.l3Manager.ApplyUpdate(update); err != nil {
+			fmt.Fprintf(os.Stderr, "threat-response: apply carve update: %v\n", err)
+			return
+		}
+		denied = true
 	}
 
-	// Record the block.
+	// Record the block intent (also serves as dedup for repeated alerts).
 	record := &BlockRecord{
 		IP:          ip,
 		ThreatScore: score,
@@ -337,6 +393,19 @@ func (trh *ThreatResponseHandler) blockIP(ip string, score int, reason string, d
 	trh.blockedIPs[ip] = record
 	trh.mu.Unlock()
 
+	// Honest audit: only claim kernel-level denial when the allowlist
+	// actually changed. An IP that was never allowlisted was already
+	// denied by the allowlist model — record that as a no-op.
+	result := "SUCCESS"
+	effect := "ABSOLUTE_SILENCE"
+	if !denied {
+		result = "NOOP_ALREADY_DENIED"
+		effect = "NONE_IP_WAS_NEVER_ALLOWLISTED"
+		fmt.Printf("[THREAT-RESPONSE] • %s was not in the allowlist — already denied, no kernel change\n", ip)
+	} else {
+		fmt.Printf("[THREAT-RESPONSE] ✓ %s now in ABSOLUTE SILENCE (XDP_DROP at NIC level)\n", ip)
+	}
+
 	// Append to audit log.
 	if trh.auditFn != nil {
 		trh.auditFn(AuditEntry{
@@ -347,14 +416,12 @@ func (trh *ThreatResponseHandler) blockIP(ip string, score int, reason string, d
 				"ip":           ip,
 				"threat_score": score,
 				"reason":       reason,
-				"method":       "XDP_LPM_TRIE_REMOVE",
-				"effect":       "ABSOLUTE_SILENCE",
+				"method":       "XDP_ALLOWLIST_REMOVE",
+				"effect":       effect,
 			},
-			Result: "SUCCESS",
+			Result: result,
 		})
 	}
-
-	fmt.Printf("[THREAT-RESPONSE] ✓ %s now in ABSOLUTE SILENCE (XDP_DROP at NIC level)\n", ip)
 }
 
 // ListBlockedIPs returns all currently blocked IPs.
@@ -393,8 +460,8 @@ func (trh *ThreatResponseHandler) Stats() map[string]interface{} {
 	defer trh.mu.Unlock()
 
 	return map[string]interface{}{
-		"total_blocked":    len(trh.blockedIPs),
-		"score_threshold":  trh.config.ThreatScoreThreshold,
-		"require_l2_hits":  trh.config.RequireL2Hits,
+		"total_blocked":   len(trh.blockedIPs),
+		"score_threshold": trh.config.ThreatScoreThreshold,
+		"require_l2_hits": trh.config.RequireL2Hits,
 	}
 }

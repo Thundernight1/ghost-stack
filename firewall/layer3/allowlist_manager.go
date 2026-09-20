@@ -41,9 +41,13 @@ type AllowlistEntry struct {
 
 // AllowlistUpdate is a signed update command for the XDP allowlist.
 type AllowlistUpdate struct {
-	// Action: "add", "remove", "flush".
+	// Action: "add", "remove", "flush", "carve".
+	// "carve" is the atomic hole-punch: Remove lists CIDRs to delete,
+	// Entries lists CIDRs to add; both apply under one signature or
+	// neither applies (rollback on failure).
 	Action    string           `json:"action"`
 	Entries   []AllowlistEntry `json:"entries,omitempty"`
+	Remove    []string         `json:"remove,omitempty"`
 	Timestamp int64            `json:"timestamp"`
 	Nonce     string           `json:"nonce"`
 	Signature string           `json:"signature"` // Ed25519 signature (hex).
@@ -88,6 +92,10 @@ type AllowlistManager struct {
 	// Interface name.
 	ifaceName string
 
+	// attached tracks whether the XDP program is currently attached.
+	// LoadAndAttach is idempotent: repeated calls are no-ops.
+	attached bool
+
 	// Alert callback for AGENT-BETA integration.
 	onDropAlert func(ip string, stats DropStats)
 }
@@ -108,9 +116,14 @@ func (am *AllowlistManager) SetDropAlertCallback(fn func(string, DropStats)) {
 }
 
 // LoadAndAttach loads the XDP program and attaches it to the network interface.
+// It is idempotent: calling it when already attached is a no-op returning nil.
 func (am *AllowlistManager) LoadAndAttach(bpfObjectPath string) error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
+
+	if am.attached {
+		return nil
+	}
 
 	// Load BPF collection.
 	spec, err := ebpf.LoadCollectionSpec(bpfObjectPath)
@@ -160,6 +173,216 @@ func (am *AllowlistManager) LoadAndAttach(bpfObjectPath string) error {
 		am.configMap.Put(key, val)
 	}
 
+	am.attached = true
+	return nil
+}
+
+// IsAttached reports whether the XDP program is currently attached.
+func (am *AllowlistManager) IsAttached() bool {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	return am.attached
+}
+
+// HasEntry reports whether the exact CIDR string is in the allowlist.
+func (am *AllowlistManager) HasEntry(cidr string) bool {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	_, ok := am.entries[cidr]
+	return ok
+}
+
+// RemoveIP removes a single IPv4 address from the allowlist, punching a
+// precise hole: if the IP is covered by a broader CIDR entry (e.g. a /24),
+// that entry is replaced by the minimal set of CIDRs covering the same
+// range minus the blocked /32. This keeps the block surgical — the rest of
+// the subnet stays allowed. Returns true if the IP is now denied.
+// plannedRemoval is the allowlist mutation needed to deny one IP.
+type plannedRemoval struct {
+	// remove lists exact CIDR strings to delete.
+	remove []string
+	// add lists entries to insert (carve-out prefixes).
+	add []AllowlistEntry
+}
+
+// planIPRemovalLocked computes the allowlist mutation needed to deny ip.
+// Caller must hold the write lock. Returns changed=false when the IP is
+// not covered by any entry (already denied by the allowlist model).
+func (am *AllowlistManager) planIPRemovalLocked(ip string) (*plannedRemoval, bool, error) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return nil, false, fmt.Errorf("invalid IP: %s", ip)
+	}
+	ip4 := parsed.To4()
+	if ip4 == nil {
+		return nil, false, fmt.Errorf("only IPv4 supported currently")
+	}
+
+	cidr32 := ip + "/32"
+
+	// Fast path: exact /32 entry.
+	if _, ok := am.entries[cidr32]; ok {
+		return &plannedRemoval{remove: []string{cidr32}}, true, nil
+	}
+
+	// Find the most specific covering entry.
+	var best *AllowlistEntry
+	bestPrefix := -1
+	for _, e := range am.entries {
+		_, ipNet, err := net.ParseCIDR(e.CIDR)
+		if err != nil {
+			continue
+		}
+		if !ipNet.Contains(ip4) {
+			continue
+		}
+		prefix, _ := ipNet.Mask.Size()
+		if prefix > bestPrefix {
+			bestPrefix = prefix
+			best = e
+		}
+	}
+	if best == nil {
+		// Not covered by any entry — already denied by the allowlist model.
+		return nil, false, nil
+	}
+
+	// Replace the covering entry with (covering CIDR minus ip/32).
+	_, coverNet, _ := net.ParseCIDR(best.CIDR)
+	plan := &plannedRemoval{remove: []string{best.CIDR}}
+	for _, r := range excludeIPFromCIDR(coverNet, ip4) {
+		plan.add = append(plan.add, AllowlistEntry{
+			CIDR:      r.String(),
+			Label:     best.Label + ":carveout",
+			ExpiresAt: best.ExpiresAt,
+		})
+	}
+	return plan, true, nil
+}
+
+// PlanIPRemoval computes the allowlist mutation needed to deny ip without
+// applying it, so callers (e.g. the orchestrator) can wrap the mutation in
+// a signed allowlist update. changed=false means the IP was never
+// allowlisted.
+func (am *AllowlistManager) PlanIPRemoval(ip string) (remove []string, add []AllowlistEntry, changed bool, err error) {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	plan, changed, err := am.planIPRemovalLocked(ip)
+	if err != nil || !changed {
+		return nil, nil, changed, err
+	}
+	return plan.remove, plan.add, true, nil
+}
+
+// RemoveIP removes a single IPv4 address from the allowlist, punching a
+// precise hole: if the IP is covered by a broader CIDR entry (e.g. a /24),
+// that entry is replaced by the minimal set of CIDRs covering the same
+// range minus the blocked /32. This keeps the block surgical — the rest of
+// the subnet stays allowed. Returns true if the IP is now denied.
+func (am *AllowlistManager) RemoveIP(ip string) (bool, error) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	plan, changed, err := am.planIPRemovalLocked(ip)
+	if err != nil || !changed {
+		return changed, err
+	}
+	for _, cidr := range plan.remove {
+		if err := am.removeEntryLocked(cidr); err != nil {
+			return false, err
+		}
+	}
+	for i := range plan.add {
+		if err := am.addEntryLocked(&plan.add[i]); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// excludeIPFromCIDR returns the minimal set of CIDRs covering ipNet's range
+// excluding the single host ip (which must be inside ipNet). Standard
+// prefix-exclusion: walk from /32 up to the covering prefix, taking the
+// sibling prefix at each level.
+func excludeIPFromCIDR(ipNet *net.IPNet, ip net.IP) []*net.IPNet {
+	ones, bits := ipNet.Mask.Size()
+	if bits != 32 {
+		return nil
+	}
+	ip4 := ip.To4()
+	if ip4 == nil || !ipNet.Contains(ip4) {
+		return nil
+	}
+
+	var out []*net.IPNet
+	addr := binary.BigEndian.Uint32(ip4)
+
+	for plen := 32; plen > ones; plen-- {
+		// Sibling prefix at this level: flip bit (32-plen).
+		sib := addr ^ (1 << (32 - plen))
+		mask := net.CIDRMask(plen, 32)
+		sibIP := make(net.IP, 4)
+		binary.BigEndian.PutUint32(sibIP, sib&binary.BigEndian.Uint32(net.IP(mask).To4()))
+		out = append(out, &net.IPNet{IP: sibIP, Mask: mask})
+	}
+	return out
+}
+
+// removeEntryLocked is removeEntry assuming the write lock is held.
+func (am *AllowlistManager) removeEntryLocked(cidr string) error {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR: %w", err)
+	}
+
+	prefixLen, _ := ipNet.Mask.Size()
+	ip := ipNet.IP.To4()
+	if ip == nil {
+		return fmt.Errorf("only IPv4 supported currently")
+	}
+
+	key := make([]byte, 8)
+	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
+	copy(key[4:8], ip)
+
+	if am.allowlistMap != nil {
+		if err := am.allowlistMap.Delete(key); err != nil {
+			return fmt.Errorf("BPF map delete: %w", err)
+		}
+	}
+
+	delete(am.entries, cidr)
+	return nil
+}
+
+// addEntryLocked is addEntry assuming the write lock is held.
+func (am *AllowlistManager) addEntryLocked(entry *AllowlistEntry) error {
+	_, ipNet, err := net.ParseCIDR(entry.CIDR)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR %q: %w", entry.CIDR, err)
+	}
+
+	prefixLen, _ := ipNet.Mask.Size()
+	ip := ipNet.IP.To4()
+	if ip == nil {
+		return fmt.Errorf("only IPv4 supported currently")
+	}
+
+	key := make([]byte, 8)
+	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
+	copy(key[4:8], ip)
+
+	val := uint32(1)
+
+	if am.allowlistMap != nil {
+		if err := am.allowlistMap.Put(key, val); err != nil {
+			return fmt.Errorf("BPF map put: %w", err)
+		}
+	}
+
+	entry.AddedAt = time.Now().Unix()
+	am.entries[entry.CIDR] = entry
+
 	return nil
 }
 
@@ -190,13 +413,13 @@ func (am *AllowlistManager) ApplyUpdate(update *AllowlistUpdate) error {
 	switch update.Action {
 	case "add":
 		for _, entry := range update.Entries {
-			if err := am.addEntry(&entry); err != nil {
+			if err := am.addEntryLocked(&entry); err != nil {
 				return fmt.Errorf("layer3: add entry %s: %w", entry.CIDR, err)
 			}
 		}
 	case "remove":
 		for _, entry := range update.Entries {
-			if err := am.removeEntry(entry.CIDR); err != nil {
+			if err := am.removeEntryLocked(entry.CIDR); err != nil {
 				return fmt.Errorf("layer3: remove entry %s: %w", entry.CIDR, err)
 			}
 		}
@@ -204,6 +427,14 @@ func (am *AllowlistManager) ApplyUpdate(update *AllowlistUpdate) error {
 		// WARNING: This removes ALL allowlist entries.
 		// The system becomes completely invisible to all external traffic.
 		am.flushAllEntries()
+	case "carve":
+		// Atomic hole-punch (threat-response IP block inside a wider
+		// allowlisted CIDR): remove the listed CIDRs, then add the carved
+		// remainder. One signature, one lock hold; any add failure rolls
+		// the entry set (and the BPF map) back to the pre-update state.
+		if err := am.carveEntriesLocked(update.Remove, update.Entries); err != nil {
+			return fmt.Errorf("layer3: carve: %w", err)
+		}
 	default:
 		return fmt.Errorf("layer3: unknown action: %s", update.Action)
 	}
@@ -211,64 +442,55 @@ func (am *AllowlistManager) ApplyUpdate(update *AllowlistUpdate) error {
 	return nil
 }
 
-// addEntry adds a single CIDR to the XDP LPM trie allowlist.
-func (am *AllowlistManager) addEntry(entry *AllowlistEntry) error {
-	_, ipNet, err := net.ParseCIDR(entry.CIDR)
-	if err != nil {
-		return fmt.Errorf("invalid CIDR: %w", err)
+// carveEntriesLocked atomically removes CIDRs and adds entries.
+// Callers must hold am.mu. On any failure the allowlist (in-memory and
+// BPF map) is rolled back to the pre-call state.
+func (am *AllowlistManager) carveEntriesLocked(remove []string, add []AllowlistEntry) error {
+	// Snapshot for rollback.
+	snapshot := make(map[string]*AllowlistEntry, len(am.entries))
+	for cidr, e := range am.entries {
+		cp := *e
+		snapshot[cidr] = &cp
 	}
 
-	prefixLen, _ := ipNet.Mask.Size()
-	ip := ipNet.IP.To4()
-	if ip == nil {
-		return fmt.Errorf("only IPv4 supported currently")
-	}
-
-	// Build LPM key: {prefixlen, addr}.
-	key := make([]byte, 8)
-	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
-	copy(key[4:8], ip)
-
-	// Value: 1 = allowed.
-	val := uint32(1)
-
-	if am.allowlistMap != nil {
-		if err := am.allowlistMap.Put(key, val); err != nil {
-			return fmt.Errorf("BPF map put: %w", err)
+	rollback := func() {
+		// Clear current state, then restore the snapshot through the
+		// same locked helpers so the BPF map matches am.entries.
+		for cidr := range am.entries {
+			_ = am.removeEntryLocked(cidr)
+		}
+		for _, e := range snapshot {
+			_ = am.addEntryLocked(e)
 		}
 	}
 
-	entry.AddedAt = time.Now().Unix()
-	am.entries[entry.CIDR] = entry
-
+	for _, cidr := range remove {
+		if err := am.removeEntryLocked(cidr); err != nil {
+			rollback()
+			return fmt.Errorf("remove %s: %w", cidr, err)
+		}
+	}
+	for i := range add {
+		if err := am.addEntryLocked(&add[i]); err != nil {
+			rollback()
+			return fmt.Errorf("add %s: %w", add[i].CIDR, err)
+		}
+	}
 	return nil
+}
+
+// addEntry adds a single CIDR to the XDP LPM trie allowlist.
+func (am *AllowlistManager) addEntry(entry *AllowlistEntry) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.addEntryLocked(entry)
 }
 
 // removeEntry removes a CIDR from the XDP allowlist.
 func (am *AllowlistManager) removeEntry(cidr string) error {
-	_, ipNet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return fmt.Errorf("invalid CIDR: %w", err)
-	}
-
-	prefixLen, _ := ipNet.Mask.Size()
-	ip := ipNet.IP.To4()
-	if ip == nil {
-		return fmt.Errorf("only IPv4 supported currently")
-	}
-
-	key := make([]byte, 8)
-	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
-	copy(key[4:8], ip)
-
-	if am.allowlistMap != nil {
-		if err := am.allowlistMap.Delete(key); err != nil {
-			return fmt.Errorf("BPF map delete: %w", err)
-		}
-	}
-
-	delete(am.entries, cidr)
-	return nil
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.removeEntryLocked(cidr)
 }
 
 // flushAllEntries removes all entries from the allowlist.
@@ -284,11 +506,13 @@ func (am *AllowlistManager) verifySignature(update *AllowlistUpdate) error {
 	msg := struct {
 		Action    string           `json:"action"`
 		Entries   []AllowlistEntry `json:"entries,omitempty"`
+		Remove    []string         `json:"remove,omitempty"`
 		Timestamp int64            `json:"timestamp"`
 		Nonce     string           `json:"nonce"`
 	}{
 		Action:    update.Action,
 		Entries:   update.Entries,
+		Remove:    update.Remove,
 		Timestamp: update.Timestamp,
 		Nonce:     update.Nonce,
 	}
@@ -432,7 +656,7 @@ func (am *AllowlistManager) CleanupExpiredEntries() int {
 
 	for cidr, entry := range am.entries {
 		if entry.ExpiresAt > 0 && now > entry.ExpiresAt {
-			_ = am.removeEntry(cidr)
+			_ = am.removeEntryLocked(cidr)
 			removed++
 		}
 	}
@@ -447,10 +671,17 @@ func (am *AllowlistManager) Detach() error {
 
 	if am.xdpLink != nil {
 		am.xdpLink.Close()
+		am.xdpLink = nil
 	}
 	if am.collection != nil {
 		am.collection.Close()
+		am.collection = nil
 	}
+	am.allowlistMap = nil
+	am.dropCounters = nil
+	am.statsMap = nil
+	am.configMap = nil
+	am.attached = false
 	return nil
 }
 
@@ -475,11 +706,56 @@ func SignUpdate(privateKey ed25519.PrivateKey, action string, entries []Allowlis
 	msg := struct {
 		Action    string           `json:"action"`
 		Entries   []AllowlistEntry `json:"entries,omitempty"`
+		Remove    []string         `json:"remove,omitempty"`
 		Timestamp int64            `json:"timestamp"`
 		Nonce     string           `json:"nonce"`
 	}{
 		Action:    update.Action,
 		Entries:   update.Entries,
+		Remove:    update.Remove,
+		Timestamp: update.Timestamp,
+		Nonce:     update.Nonce,
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	hash := sha256.Sum256(msgBytes)
+	sig := ed25519.Sign(privateKey, hash[:])
+	update.Signature = hex.EncodeToString(sig)
+
+	return update, nil
+}
+
+// SignCarveUpdate builds a signed "carve" update: atomically remove the
+// listed CIDRs and add the given entries (threat-response hole-punch).
+// remove carries CIDR strings; add carries full entries.
+func SignCarveUpdate(privateKey ed25519.PrivateKey, remove []string, add []AllowlistEntry) (*AllowlistUpdate, error) {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("layer3: rand.Read nonce failed: %w", err)
+	}
+
+	update := &AllowlistUpdate{
+		Action:    "carve",
+		Entries:   add,
+		Remove:    remove,
+		Timestamp: time.Now().Unix(),
+		Nonce:     hex.EncodeToString(nonce),
+	}
+
+	msg := struct {
+		Action    string           `json:"action"`
+		Entries   []AllowlistEntry `json:"entries,omitempty"`
+		Remove    []string         `json:"remove,omitempty"`
+		Timestamp int64            `json:"timestamp"`
+		Nonce     string           `json:"nonce"`
+	}{
+		Action:    update.Action,
+		Entries:   update.Entries,
+		Remove:    update.Remove,
 		Timestamp: update.Timestamp,
 		Nonce:     update.Nonce,
 	}
