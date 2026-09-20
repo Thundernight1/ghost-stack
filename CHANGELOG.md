@@ -240,3 +240,39 @@ dashboard JS `node --check` ✅
   izlenmeli.
 - Dashboard status API'yi aynı origin'den bekler (reverse proxy / SSH
   tüneli gerekir); API kapalıysa OFFLINE gösterir.
+
+## 14. CI — security scan pin'leri ve bulgu triyajı (2026-09-20)
+
+**Dosya:** `.github/workflows/ci.yml`, `auth/webauthn.go`, `auth/session.go`,
+`agents/beta/sources.go`, `firewall/layer3/allowlist_manager.go`,
+`firewall/layer2/deception_responder.go`, `cmd/ghost-ctl/main.go`,
+`cmd/ghost-ctl/status_api.go`, `cmd/agent-alpha/main.go`,
+`cmd/agent-beta/main.go`
+
+Kök neden: `go install ...@latest` ile kurulan gosec/staticcheck'in yeni
+sürümleri Go >= 1.25/1.26 istiyor ve yeni kurallar ekledi; CI'daki Go 1.22.2
+ile 4. adım ("Security Scan") main'de de dependabot PR'larında da kırmızıydı.
+Gerçek gosec bu kodda daha önce hiç yeşil olmamıştı (önceden echo stub'du).
+
+- gosec `v2.22.0`, staticcheck `v0.5.1`'e pin'lendi (CI'daki Go 1.22.2 ile
+  çalışan en yeni sürümler); gerekçesi ci.yml'de yorum olarak yazılı.
+- 6 staticcheck bulgusu düzeltildi: kullanılmayan `ensureLoopback` ve
+  `AllowlistManager.addEntry` silindi, 4 hata metni küçültüldü, argümansız
+  `fmt.Sprintf` kaldırıldı.
+- 19 G115 (int overflow) bulgusu tek tek incelendi:
+  - `auth/webauthn.go` CBOR çözümleyiciye gerçek range-check eklendi
+    (negatif int ve map anahtarı `math.MaxInt64` üstündeyse reddedilir);
+    ayrıca saldırgan-kontrollü `make` size-hint'i kaldırıldı (bellek
+    tüketimi DoS'u) ve iç içe map'ler için derinlik sınırı (32) eklendi.
+  - Sınırı kanıtlanabilir güvenli dönüşümlere (prefix len 0-32, deptID
+    0-99, pid, sabitler, fingerprint hash girdisi) gerekçeli
+    `// #nosec G115` eklendi.
+  - `GHOST_PID_NS` negatife, `GHOST_NFLOG_GROUP` 0-65535 aralığına
+    doğrulandı.
+- Denetlenen false-positive sınıfları ci.yml'de gerekçesiyle exclude edildi:
+  G104 (42, hepsi LOW Close/Encode), G204 (26, hepsi shell'siz
+  `exec.Command` + sabit binary), G304 (24, hepsi daemon-içi procfs/cgroup/
+  config yolu), G301/G302/G306 (21, container için 0755/0644/0660).
+  Tehlikeli sınıflar (G101, G201, G401-G405, G115 dahil) aktif.
+- Doğrulama: `gosec` 0 bulgu, `staticcheck` temiz, `go vet` temiz,
+  3 binary derleniyor, CI test alt kümesi geçiyor.

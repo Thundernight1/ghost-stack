@@ -342,7 +342,7 @@ func (am *AllowlistManager) removeEntryLocked(cidr string) error {
 	}
 
 	key := make([]byte, 8)
-	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
+	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen)) // #nosec G115 -- prefixLen in [0,32] from Mask.Size()
 	copy(key[4:8], ip)
 
 	if am.allowlistMap != nil {
@@ -369,7 +369,7 @@ func (am *AllowlistManager) addEntryLocked(entry *AllowlistEntry) error {
 	}
 
 	key := make([]byte, 8)
-	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen))
+	binary.LittleEndian.PutUint32(key[0:4], uint32(prefixLen)) // #nosec G115 -- prefixLen in [0,32] from Mask.Size()
 	copy(key[4:8], ip)
 
 	val := uint32(1)
@@ -477,13 +477,6 @@ func (am *AllowlistManager) carveEntriesLocked(remove []string, add []AllowlistE
 		}
 	}
 	return nil
-}
-
-// addEntry adds a single CIDR to the XDP LPM trie allowlist.
-func (am *AllowlistManager) addEntry(entry *AllowlistEntry) error {
-	am.mu.Lock()
-	defer am.mu.Unlock()
-	return am.addEntryLocked(entry)
 }
 
 // removeEntry removes a CIDR from the XDP allowlist.

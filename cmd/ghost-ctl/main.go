@@ -1042,8 +1042,8 @@ func printSpawnSuccess(deptID int, deptName string, rc *namespace.RunningContain
 	fmt.Printf("  Container:  %s\n", containerIP)
 	fmt.Printf("  Gateway:    %s\n", gatewayIP)
 	fmt.Printf("  UID Range:  %d-%d (host)\n",
-		hierarchy.TierUIDBase(tier)+uint32(deptID)*1000,
-		hierarchy.TierUIDBase(tier)+uint32(deptID)*1000+999)
+		hierarchy.TierUIDBase(tier)+uint32(deptID)*1000,     // #nosec G115 -- deptID in [0,99], validated at parse
+		hierarchy.TierUIDBase(tier)+uint32(deptID)*1000+999) // #nosec G115 -- deptID in [0,99], validated at parse
 	fmt.Printf("  DB Type:    %s\n", db.DatabaseTypeForTier(tier))
 	fmt.Printf("  Key Mgmt:   HOST-ONLY (HostKeyStore, /dev/shm tmpfs)\n")
 }

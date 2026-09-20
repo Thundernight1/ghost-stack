@@ -29,6 +29,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 )
@@ -264,7 +265,15 @@ func (d *cborDecoder) readN(n int) (uint64, error) {
 	return v, nil
 }
 
+// maxCBORDepth bounds decoder recursion: hostile nesting would otherwise
+// exhaust the goroutine stack and panic the handler.
+const maxCBORDepth = 32
+
 func decodeCBORItem(d *cborDecoder) (*cborValue, error) {
+	return decodeCBORItemDepth(d, 0)
+}
+
+func decodeCBORItemDepth(d *cborDecoder, depth int) (*cborValue, error) {
 	if d.pos >= len(d.data) {
 		return nil, fmt.Errorf("cbor: truncated")
 	}
@@ -282,39 +291,54 @@ func decodeCBORItem(d *cborDecoder) (*cborValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &cborValue{isNint: true, n: -1 - int64(v)}, nil
+		if v > math.MaxInt64 {
+			return nil, fmt.Errorf("cbor: negative int out of range")
+		}
+		return &cborValue{isNint: true, n: -1 - int64(v)}, nil // #nosec G115 -- v <= math.MaxInt64 verified above
 	case 2: // byte string
 		l, err := d.readArg(ai)
 		if err != nil {
 			return nil, err
 		}
-		if uint64(d.pos)+l > uint64(len(d.data)) {
+		// d.pos is always within [0, len(d.data)] (decoder invariant), so the
+		// subtraction cannot go negative.
+		remaining := uint64(len(d.data) - d.pos) // #nosec G115
+		if l > remaining {
 			return nil, fmt.Errorf("cbor: byte string overruns")
 		}
-		b := append([]byte{}, d.data[d.pos:d.pos+int(l)]...)
-		d.pos += int(l)
+		b := append([]byte{}, d.data[d.pos:d.pos+int(l)]...) // #nosec G115 -- l <= len(d.data)-d.pos, int(l) cannot overflow
+		d.pos += int(l)                                      // #nosec G115 -- same bound as above
 		return &cborValue{b: b}, nil
 	case 5: // map
 		l, err := d.readArg(ai)
 		if err != nil {
 			return nil, err
 		}
-		m := make(map[int64]*cborValue, l)
+		// Never preallocate from an attacker-controlled length: a huge hint
+		// would exhaust memory before the first item is even decoded.
+		// COSE keys carry a handful of entries; grow naturally instead.
+		if depth >= maxCBORDepth {
+			return nil, fmt.Errorf("cbor: max nesting depth exceeded")
+		}
+		m := make(map[int64]*cborValue)
 		for i := uint64(0); i < l; i++ {
-			k, err := decodeCBORItem(d)
+			k, err := decodeCBORItemDepth(d, depth+1)
 			if err != nil {
 				return nil, err
 			}
 			var key int64
 			switch {
 			case k.isUint:
-				key = int64(k.u)
+				if k.u > math.MaxInt64 {
+					return nil, fmt.Errorf("cbor: map key out of range")
+				}
+				key = int64(k.u) // #nosec G115 -- k.u <= math.MaxInt64 verified above
 			case k.isNint:
 				key = k.n
 			default:
 				return nil, fmt.Errorf("cbor: non-integer map key")
 			}
-			v, err := decodeCBORItem(d)
+			v, err := decodeCBORItemDepth(d, depth+1)
 			if err != nil {
 				return nil, err
 			}

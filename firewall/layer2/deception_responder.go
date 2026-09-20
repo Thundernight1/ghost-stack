@@ -74,22 +74,22 @@ func NewDeceptionListener(alertFn func(DeceptionEvent)) *DeceptionListener {
 func (dl *DeceptionListener) Start() error {
 	// Port 8443: Fake Kubernetes API server.
 	if err := dl.startTLSService(8443, "kubernetes", dl.kubernetesHandler()); err != nil {
-		return fmt.Errorf("K8s API start: %w", err)
+		return fmt.Errorf("k8s API start: %w", err)
 	}
 
 	// Port 9200: Fake Elasticsearch API.
 	if err := dl.startHTTPService(9200, "elasticsearch", dl.elasticsearchHandler()); err != nil {
-		return fmt.Errorf("Elasticsearch start: %w", err)
+		return fmt.Errorf("elasticsearch start: %w", err)
 	}
 
 	// Port 5601: Fake Kibana dashboard.
 	if err := dl.startHTTPService(5601, "kibana", dl.kibanaHandler()); err != nil {
-		return fmt.Errorf("Kibana start: %w", err)
+		return fmt.Errorf("kibana start: %w", err)
 	}
 
 	// Port 2375: Fake Docker API (unencrypted — intentional honeypot bait).
 	if err := dl.startHTTPService(2375, "docker", dl.dockerHandler()); err != nil {
-		return fmt.Errorf("Docker API start: %w", err)
+		return fmt.Errorf("docker API start: %w", err)
 	}
 
 	return nil
@@ -244,7 +244,7 @@ func (dl *DeceptionListener) kubernetesHandler() http.Handler {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"kind":    "Status",
 			"status":  "Failure",
-			"message": fmt.Sprintf("the server could not find the requested resource"),
+			"message": "the server could not find the requested resource",
 			"reason":  "NotFound",
 			"code":    404,
 		})

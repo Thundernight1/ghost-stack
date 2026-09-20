@@ -125,11 +125,11 @@ func (r *nflogReader) sendConfig(cmd uint8, payload []byte) error {
 	msg := append(hdr, attrs...)
 
 	nlh := make([]byte, 16)
-	binary.LittleEndian.PutUint32(nlh[0:], uint32(16+len(msg)))
-	binary.LittleEndian.PutUint16(nlh[4:], uint16(nfnlSubsysUlog<<8|nfulnlMsgConfig))
-	binary.LittleEndian.PutUint16(nlh[6:], 0) // flags
-	binary.LittleEndian.PutUint32(nlh[8:], 1) // seq
-	binary.LittleEndian.PutUint32(nlh[12:], uint32(os.Getpid()))
+	binary.LittleEndian.PutUint32(nlh[0:], uint32(16+len(msg)))                       // #nosec G115 -- small internal buffer length
+	binary.LittleEndian.PutUint16(nlh[4:], uint16(nfnlSubsysUlog<<8|nfulnlMsgConfig)) // #nosec G115 -- compile-time constants
+	binary.LittleEndian.PutUint16(nlh[6:], 0)                                         // flags
+	binary.LittleEndian.PutUint32(nlh[8:], 1)                                         // seq
+	binary.LittleEndian.PutUint32(nlh[12:], uint32(os.Getpid()))                      // #nosec G115 -- pid is always positive
 	packet := append(nlh, msg...)
 
 	return unix.Sendto(r.fd, packet, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK})
@@ -140,7 +140,7 @@ func nlaPut(typ uint16, payload []byte) []byte {
 	l := 4 + len(payload)
 	padded := (l + 3) &^ 3
 	b := make([]byte, padded)
-	binary.LittleEndian.PutUint16(b[0:], uint16(l))
+	binary.LittleEndian.PutUint16(b[0:], uint16(l)) // #nosec G115 -- netlink attr built from small internal payload
 	binary.LittleEndian.PutUint16(b[2:], typ)
 	copy(b[4:], payload)
 	return b
@@ -434,7 +434,7 @@ func openAuditNetlink() (*auditReader, error) {
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{
 		Family: unix.AF_NETLINK,
 		Groups: 0,
-		Pid:    uint32(os.Getpid()),
+		Pid:    uint32(os.Getpid()), // #nosec G115 -- pid is always positive
 	}); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("audit: bind (is auditd running?): %w", err)

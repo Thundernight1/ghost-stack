@@ -16,7 +16,6 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -209,16 +208,4 @@ func splitLines(data []byte) [][]byte {
 		out = append(out, data[start:])
 	}
 	return out
-}
-
-// ensureLoopback is a helper for operators: it reports whether addr
-// resolves to a loopback interface. Not enforced — GHOST_STATUS_ADDR is
-// the operator's explicit choice.
-func ensureLoopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

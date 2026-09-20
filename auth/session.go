@@ -457,15 +457,17 @@ func (sm *SessionManager) computeTokenHMAC(token *SessionToken) string {
 	h.Write([]byte(token.Tier))
 	h.Write([]byte(token.EncryptedPayload))
 
-	// Include authorization and lifecycle fields.
+	// Include authorization and lifecycle fields. The uint64 conversions below
+	// feed the fingerprint hash; they are deterministic and identical on both
+	// sides of the comparison, so no mismatch or memory-unsafety can result.
 	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, uint64(token.DeptID))
+	binary.BigEndian.PutUint64(buf, uint64(token.DeptID)) // #nosec G115
 	h.Write(buf)
-	binary.BigEndian.PutUint64(buf, uint64(token.IssuedAt.Unix()))
+	binary.BigEndian.PutUint64(buf, uint64(token.IssuedAt.Unix())) // #nosec G115
 	h.Write(buf)
-	binary.BigEndian.PutUint64(buf, uint64(token.ExpiresAt.Unix()))
+	binary.BigEndian.PutUint64(buf, uint64(token.ExpiresAt.Unix())) // #nosec G115
 	h.Write(buf)
-	binary.BigEndian.PutUint64(buf, uint64(token.RotatedAt.Unix()))
+	binary.BigEndian.PutUint64(buf, uint64(token.RotatedAt.Unix())) // #nosec G115
 	h.Write(buf)
 
 	return hex.EncodeToString(h.Sum(nil))

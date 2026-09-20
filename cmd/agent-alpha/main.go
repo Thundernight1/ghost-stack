@@ -17,13 +17,14 @@
 // variables and a single optional positional arg (the DeptID).
 //
 // Configuration (env vars):
-//   GHOST_ALERT_SOCKET  Path to the orchestrator's alert socket.
-//                       Default: /var/run/ghost-stack/alert.sock
-//   GHOST_BPF_OBJECT    Path to the compiled eBPF object.
-//                       Default: /opt/ghost-stack/bpf/alpha.bpf.o
-//   GHOST_DEPT_ID       Department ID to observe (matches the @ arg
-//                       from the systemd unit). Default: 0
-//   GHOST_PID_NS        Target PID namespace ID (0 = all). Default: 0
+//
+//	GHOST_ALERT_SOCKET  Path to the orchestrator's alert socket.
+//	                    Default: /var/run/ghost-stack/alert.sock
+//	GHOST_BPF_OBJECT    Path to the compiled eBPF object.
+//	                    Default: /opt/ghost-stack/bpf/alpha.bpf.o
+//	GHOST_DEPT_ID       Department ID to observe (matches the @ arg
+//	                    from the systemd unit). Default: 0
+//	GHOST_PID_NS        Target PID namespace ID (0 = all). Default: 0
 package main
 
 import (
@@ -41,7 +42,7 @@ func main() {
 		AlertSocketPath: getenv("GHOST_ALERT_SOCKET", "/var/run/ghost-stack/alert.sock"),
 		BPFObjectPath:   getenv("GHOST_BPF_OBJECT", "/opt/ghost-stack/bpf/alpha.bpf.o"),
 		DeptID:          getenvInt("GHOST_DEPT_ID", 0),
-		TargetPIDNsID:   uint32(getenvInt("GHOST_PID_NS", 0)),
+		TargetPIDNsID:   uint32(max(getenvInt("GHOST_PID_NS", 0), 0)), // #nosec G115 -- clamped to >= 0
 		// SensitivePaths defaults are populated by Observer.attachPrograms
 		// if left nil (see populateSensitivePaths).
 	}

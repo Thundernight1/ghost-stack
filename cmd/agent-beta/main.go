@@ -19,14 +19,15 @@
 // any CLI surface — configuration comes from environment variables.
 //
 // Configuration (env vars):
-//   GHOST_ALERT_SOCKET   Path to the orchestrator's alert socket.
-//                        Default: /var/run/ghost-stack/alert.sock
-//   GHOST_L2_PERF_MAP    Pinned BPF perf_event_array path for L2.
-//                        Default: /sys/fs/bpf/ghost-stack/l2_events
-//   GHOST_L3_DROP_MAP    Pinned BPF map path for L3 drop counters.
-//                        Default: /sys/fs/bpf/ghost-stack/l3_drops
-//   GHOST_NFLOG_GROUP    NFLOG group ID for L1 events.
-//                        Default: 1
+//
+//	GHOST_ALERT_SOCKET   Path to the orchestrator's alert socket.
+//	                     Default: /var/run/ghost-stack/alert.sock
+//	GHOST_L2_PERF_MAP    Pinned BPF perf_event_array path for L2.
+//	                     Default: /sys/fs/bpf/ghost-stack/l2_events
+//	GHOST_L3_DROP_MAP    Pinned BPF map path for L3 drop counters.
+//	                     Default: /sys/fs/bpf/ghost-stack/l3_drops
+//	GHOST_NFLOG_GROUP    NFLOG group ID for L1 events.
+//	                     Default: 1
 package main
 
 import (
@@ -46,8 +47,8 @@ func main() {
 		L3DropMapPath:    getenv("GHOST_L3_DROP_MAP", "/sys/fs/bpf/ghost-stack/l3_drops"),
 		OrchestratorAddr: getenv("GHOST_ORCHESTRATOR", ""),
 	}
-	if g, err := strconv.Atoi(getenv("GHOST_NFLOG_GROUP", "1")); err == nil {
-		cfg.NflogGroup = uint16(g)
+	if g, err := strconv.Atoi(getenv("GHOST_NFLOG_GROUP", "1")); err == nil && g >= 0 && g <= 65535 {
+		cfg.NflogGroup = uint16(g) // #nosec G115 -- range validated above
 	}
 
 	ab := beta.NewAgentBeta(cfg)
